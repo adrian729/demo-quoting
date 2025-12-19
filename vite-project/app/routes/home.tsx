@@ -41,11 +41,17 @@ export default function Home() {
     }
   };
 
+  const headers = fileData?.[0] || [];
+  const rows = fileData?.slice(1) || [];
+
   return (
-    <div className='w-full h-screen bg-slate-800'>
-      <form>
+    <div className='w-full h-screen bg-slate-800 p-8 text-slate-200 flex flex-col gap-6'>
+      <form className='flex flex-col gap-2'>
+        <label htmlFor='csvInput' className='font-semibold text-slate-300'>
+          Upload File
+        </label>
         <input
-          className='text-slate-800 bg-slate-100 border-2 border-slate-500'
+          className='block w-full max-w-md cursor-pointer rounded-lg border border-slate-600 bg-slate-700 text-sm text-slate-200 file:mr-4 file:cursor-pointer file:border-0 file:bg-slate-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-slate-500'
           onChange={handleFileChange}
           id='csvInput'
           name='file'
@@ -53,7 +59,46 @@ export default function Home() {
           accept='.csv,.xls,.xlsx,.txt'
         />
       </form>
-      {!!error && <div className='text-red-500'>{error}</div>}
+
+      {!!error && <div className='text-red-400 font-medium'>{error}</div>}
+
+      {fileData && (
+        <div className='border border-slate-700 rounded-lg overflow-hidden shadow-lg bg-slate-800 flex-1'>
+          <div className='h-full overflow-auto'>
+            <table className='w-full text-left text-sm text-slate-400'>
+              <thead className='bg-slate-900 text-xs font-bold uppercase text-slate-200 sticky top-0 z-10 shadow-sm'>
+                <tr>
+                  {headers.map((header, index) => (
+                    <th
+                      key={index}
+                      className='px-6 py-3 tracking-wider whitespace-nowrap bg-slate-900'
+                    >
+                      {String(header ?? "")}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className='divide-y divide-slate-700'>
+                {rows.map((row, rowIndex) => (
+                  <tr
+                    key={rowIndex}
+                    className='hover:bg-slate-700/50 transition-colors'
+                  >
+                    {row.map((cell, cellIndex) => (
+                      <td
+                        key={cellIndex}
+                        className='px-6 py-4 whitespace-nowrap font-medium text-slate-300'
+                      >
+                        {String(cell ?? "")}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
