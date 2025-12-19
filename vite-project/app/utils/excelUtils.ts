@@ -5,7 +5,7 @@ export function cleanupData(data: (unknown[] | undefined | null)[]) {
     .filter((row) => row != null)
     .filter(
       (row) =>
-        Array.isArray(row) && row.length > 0 && row.some((cell) => !!cell)
+        Array.isArray(row) && row.length > 0 && row.some((cell) => !!cell),
     );
 }
 
@@ -22,3 +22,19 @@ export async function parseFile(file: File): Promise<unknown[][]> {
 
   return cleanupData(jsonData);
 }
+
+export type ExportFileType = "xlsx" | "csv";
+
+export const saveToExcel = <T extends object>(
+  data: T[],
+  fileName: string,
+  format: ExportFileType,
+): void => {
+  const worksheet = XLSX.utils.json_to_sheet(data);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
+
+  const nameWithoutExtension = fileName.replace(/\.(xlsx|csv)$/, "");
+  const finalFileName = `${nameWithoutExtension}.${format}`;
+  XLSX.writeFile(workbook, finalFileName);
+};
