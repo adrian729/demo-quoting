@@ -382,7 +382,7 @@ export default function Home() {
   return (
     <div className="flex h-screen w-full flex-col gap-4 bg-slate-900 p-6 text-slate-200">
       {/* 1. Header Section */}
-      <div className="flex flex-shrink-0 items-center gap-4 border-b border-slate-700 pb-4">
+      <div className="flex shrink-0 items-center gap-4 border-b border-slate-700 pb-4">
         <span className="font-semibold text-slate-300">Upload File</span>
         <label
           className={cn(
@@ -606,24 +606,28 @@ export default function Home() {
         </div>
 
         {/* Right Side: Gemini Chat */}
-        {isChatOpen && (
-          <div className="w-[20%] min-w-[320px] transition-all duration-300">
-            <GeminiChat
-              data={fileData}
-              onDataUpdate={handleGeminiUpdate}
-              onClose={() => setIsChatOpen(false)}
-            />
-          </div>
-        )}
+        {/* We keep the component mounted but hidden when closed to preserve state */}
+        <div
+          className={cn(
+            "w-[20%] min-w-[320px] transition-all duration-300",
+            isChatOpen ? "opacity-100" : "hidden opacity-0",
+          )}
+        >
+          <GeminiChat
+            data={fileData}
+            onDataUpdate={handleGeminiUpdate}
+            onClose={() => setIsChatOpen(false)}
+          />
+        </div>
       </div>
 
       {/* Floating Chat Button (When closed) */}
       {!isChatOpen && (
         <button
           onClick={() => setIsChatOpen(true)}
-          className="fixed right-8 bottom-8 z-50 flex cursor-pointer items-center gap-2 rounded-full border border-slate-600 bg-slate-800 px-3 py-3 text-slate-200 shadow-xl transition-all hover:bg-slate-700 hover:text-white hover:shadow-2xl"
+          className="fixed right-8 bottom-8 z-50 flex h-14 w-14 cursor-pointer items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-slate-200 shadow-xl transition-all hover:-translate-y-1 hover:bg-slate-700 hover:text-white hover:shadow-2xl"
         >
-          <SparklesIcon className="h-5 w-5 text-purple-400" />
+          <SparklesIcon className="h-6 w-6 text-purple-400" />
         </button>
       )}
 
