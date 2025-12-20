@@ -1,4 +1,9 @@
-import { useState, type ChangeEvent, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useState,
+  type ChangeEvent,
+  type KeyboardEvent,
+} from "react";
 import GeminiChat from "~/components/GeminiChat";
 import { cn } from "~/utils/cn";
 import {
@@ -34,13 +39,20 @@ const DownloadIcon = ({ className }: { className?: string }) => (
 interface ExportActionsProps<T extends object> {
   data: T[];
   fileName?: string;
+  initialFormat?: SupportedExportType; // Added prop
 }
 
 const ExportActions = <T extends object>({
   data,
   fileName = "export",
+  initialFormat = "xlsx",
 }: ExportActionsProps<T>) => {
-  const [format, setFormat] = useState<SupportedExportType>("xlsx");
+  const [format, setFormat] = useState<SupportedExportType>(initialFormat);
+
+  // Update internal state if the initialFormat prop changes (e.g., new file uploaded)
+  useEffect(() => {
+    setFormat(initialFormat);
+  }, [initialFormat]);
 
   if (!data || data.length === 0) return null;
 
@@ -105,6 +117,10 @@ export default function Home() {
   const [fileName, setFileName] = useState<string>("");
   const [error, setError] = useState<string>();
 
+  // New state to track the file extension of the uploaded file
+  const [detectedFormat, setDetectedFormat] =
+    useState<SupportedExportType>("xlsx");
+
   const [editingCell, setEditingCell] = useState<EditingCell | null>(null);
   const [tempValue, setTempValue] = useState<string>("");
 
@@ -123,6 +139,14 @@ export default function Home() {
       }
       setFileData(rawData);
       setFileName(inputFile.name);
+
+      // Detect Extension and update state
+      const ext = inputFile.name.split(".").pop()?.toLowerCase();
+      if (isOfTypeSupportedExportType(ext)) {
+        setDetectedFormat(ext);
+      } else {
+        setDetectedFormat("xlsx"); // Default fallback
+      }
     } catch (err) {
       console.error("Error processing file:", err);
       setError(
@@ -216,6 +240,7 @@ export default function Home() {
           <ExportActions
             data={exportData}
             fileName={fileName || "edited_data"}
+            initialFormat={detectedFormat} // Pass the detected format here
           />
         )}
       </div>

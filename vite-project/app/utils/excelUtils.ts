@@ -1,13 +1,35 @@
 import type { BookType } from "xlsx";
 import * as XLSX from "xlsx";
 
+function isRowEmpty(row: unknown[]): boolean {
+  return row.every((cell) => cell == null || cell === "");
+}
+
+function isColumnEmpty(data: unknown[][], colIndex: number): boolean {
+  return data.every((row) => row[colIndex] == null || row[colIndex] === "");
+}
+
+function removeColumn(data: unknown[][], colIndex: number): unknown[][] {
+  return data.map((row) => {
+    const newRow = [...row];
+    newRow.splice(colIndex, 1);
+    return newRow;
+  });
+}
+
 export function cleanupData(data: (unknown[] | undefined | null)[]) {
-  return data
+  let cleanData = data
     .filter((row) => row != null)
-    .filter(
-      (row) =>
-        Array.isArray(row) && row.length > 0 && row.some((cell) => !!cell),
-    );
+    .filter((row) => !isRowEmpty(row));
+
+  const rowLength = cleanData[0]?.length || 0;
+  for (let i = 0; i < rowLength; i++) {
+    if (isColumnEmpty(cleanData, i)) {
+      cleanData = removeColumn(cleanData, i);
+    }
+  }
+
+  return cleanData;
 }
 
 export async function parseFile(file: File): Promise<unknown[][]> {
