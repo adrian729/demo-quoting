@@ -1,3 +1,4 @@
+import type { BookType } from "xlsx";
 import * as XLSX from "xlsx";
 
 export function cleanupData(data: (unknown[] | undefined | null)[]) {
@@ -23,12 +24,32 @@ export async function parseFile(file: File): Promise<unknown[][]> {
   return cleanupData(jsonData);
 }
 
-export type ExportFileType = "xlsx" | "csv";
+export const SUPPORTED_EXPORT_TYPES: BookType[] = [
+  "xlsx",
+  "xls",
+  "xlml",
+  "ods",
+  "csv",
+  "txt",
+  "html",
+  "numbers",
+];
+
+export type SupportedExportType = (typeof SUPPORTED_EXPORT_TYPES)[number];
+
+export const isOfTypeSupportedExportType = (
+  value: unknown,
+): value is SupportedExportType => {
+  return (
+    typeof value === "string" &&
+    SUPPORTED_EXPORT_TYPES.includes(value as BookType)
+  );
+};
 
 export const saveToExcel = <T extends object>(
   data: T[],
   fileName: string,
-  format: ExportFileType,
+  format: SupportedExportType,
 ): void => {
   const worksheet = XLSX.utils.json_to_sheet(data);
   const workbook = XLSX.utils.book_new();
