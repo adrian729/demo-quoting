@@ -1,5 +1,5 @@
 import { useState, type ChangeEvent, type KeyboardEvent } from "react";
-import GeminiChat from "~/components/GeminiChat"; // <--- Imported here
+import GeminiChat from "~/components/GeminiChat";
 import { cn } from "~/utils/cn";
 import {
   isOfTypeSupportedExportType,
@@ -42,9 +42,7 @@ const ExportActions = <T extends object>({
 }: ExportActionsProps<T>) => {
   const [format, setFormat] = useState<SupportedExportType>("xlsx");
 
-  if (!data || data.length === 0) {
-    return null;
-  }
+  if (!data || data.length === 0) return null;
 
   return (
     <div className="ml-auto flex items-center gap-2">
@@ -176,6 +174,7 @@ export default function Home() {
   const headers = fileData?.[0] || [];
   const bodyRows = fileData?.slice(1) || [];
 
+  // Transform data for export
   const exportData = bodyRows.map((row) => {
     const rowObj: Record<string, unknown> = {};
     headers.forEach((header, index) => {
@@ -185,9 +184,9 @@ export default function Home() {
   });
 
   return (
-    <div className="flex h-screen w-full flex-col gap-6 bg-slate-900 p-8 text-slate-200">
-      {/* Upload & Export Section */}
-      <div className="flex items-center gap-4">
+    <div className="flex h-screen w-full flex-col gap-4 bg-slate-900 p-6 text-slate-200">
+      {/* 1. Header Section */}
+      <div className="flex flex-shrink-0 items-center gap-4 border-b border-slate-700 pb-4">
         <span className="font-semibold text-slate-300">Upload File</span>
 
         <label
@@ -221,78 +220,35 @@ export default function Home() {
         )}
       </div>
 
-      {/* --- Added GeminiChat Component here --- */}
-      <GeminiChat />
-
-      {fileData && (
-        <div className="flex-1 overflow-hidden rounded-lg border border-slate-700 bg-slate-800 shadow-lg">
-          <div className="h-full overflow-auto">
-            <table className="w-full border-collapse text-left text-sm text-slate-400">
-              <thead className="sticky top-0 z-10 bg-slate-900 text-xs font-bold text-slate-200 shadow-sm">
-                <tr>
-                  {[...headers].map((header, colIndex) => {
-                    const rowIndex = 0;
-                    const isEditing =
-                      editingCell?.rowIndex === rowIndex &&
-                      editingCell?.colIndex === colIndex;
-
-                    return (
-                      <th
-                        key={colIndex}
-                        onDoubleClick={() =>
-                          startEditing(rowIndex, colIndex, header)
-                        }
-                        className={cn(
-                          "px-6 py-3 tracking-wider whitespace-nowrap",
-                          "border-b border-slate-700",
-                          "cursor-pointer hover:bg-slate-800",
-                          colIndex % 2 === 0 ? "bg-slate-900" : "bg-slate-800",
-                          isEditing && "p-0",
-                        )}
-                      >
-                        {isEditing ? (
-                          <input
-                            autoFocus
-                            type="text"
-                            value={tempValue}
-                            onChange={(e) => setTempValue(e.target.value)}
-                            onBlur={saveEdit}
-                            onKeyDown={handleKeyDown}
-                            className="h-full w-full rounded border-2 border-blue-500 bg-slate-700 px-2 py-1 text-xs font-bold text-white outline-none"
-                          />
-                        ) : (
-                          String(header ?? "")
-                        )}
-                      </th>
-                    );
-                  })}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-700">
-                {bodyRows.map((row, rIndex) => {
-                  const rowIndex = rIndex + 1;
-                  return (
-                    <tr
-                      key={rowIndex}
-                      className="transition-colors hover:bg-slate-700/50"
-                    >
-                      {[...row].map((cell, colIndex) => {
+      {/* 2. Main Content (Split View) */}
+      <div className="flex flex-1 gap-6 overflow-hidden">
+        {/* Left Side: Data Table */}
+        <div className="flex min-w-0 flex-1 flex-col">
+          {fileData ? (
+            <div className="flex-1 overflow-hidden rounded-lg border border-slate-700 bg-slate-800 shadow-lg">
+              <div className="h-full overflow-auto">
+                <table className="w-full border-collapse text-left text-sm text-slate-400">
+                  <thead className="sticky top-0 z-10 bg-slate-900 text-xs font-bold text-slate-200 shadow-sm">
+                    <tr>
+                      {[...headers].map((header, colIndex) => {
+                        const rowIndex = 0;
                         const isEditing =
                           editingCell?.rowIndex === rowIndex &&
                           editingCell?.colIndex === colIndex;
 
-                        const cellContent = String(cell ?? "");
-                        const isEmpty = cellContent.trim() === "";
-
                         return (
-                          <td
+                          <th
                             key={colIndex}
                             onDoubleClick={() =>
-                              startEditing(rowIndex, colIndex, cell)
+                              startEditing(rowIndex, colIndex, header)
                             }
                             className={cn(
-                              "relative min-w-25 cursor-pointer px-6 py-4 font-medium whitespace-nowrap text-slate-300",
-                              colIndex % 2 !== 0 && "bg-slate-700/20",
+                              "px-6 py-3 tracking-wider whitespace-nowrap",
+                              "border-b border-slate-700",
+                              "cursor-pointer hover:bg-slate-800",
+                              colIndex % 2 === 0
+                                ? "bg-slate-900"
+                                : "bg-slate-800",
                               isEditing && "p-0",
                             )}
                           >
@@ -304,29 +260,89 @@ export default function Home() {
                                 onChange={(e) => setTempValue(e.target.value)}
                                 onBlur={saveEdit}
                                 onKeyDown={handleKeyDown}
-                                className="h-full w-full rounded border-2 border-blue-500 bg-slate-600 px-2 py-1.5 text-white outline-none"
+                                className="h-full w-full rounded border-2 border-blue-500 bg-slate-700 px-2 py-1 text-xs font-bold text-white outline-none"
                               />
                             ) : (
-                              <>
-                                {isEmpty && (
-                                  <span className="absolute top-1 left-1 text-[10px] leading-none text-slate-400 italic opacity-60 select-none">
-                                    Empty
-                                  </span>
-                                )}
-                                {cellContent}
-                              </>
+                              String(header ?? "")
                             )}
-                          </td>
+                          </th>
                         );
                       })}
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                  </thead>
+                  <tbody className="divide-y divide-slate-700">
+                    {bodyRows.map((row, rIndex) => {
+                      const rowIndex = rIndex + 1;
+                      return (
+                        <tr
+                          key={rowIndex}
+                          className="transition-colors hover:bg-slate-700/50"
+                        >
+                          {[...row].map((cell, colIndex) => {
+                            const isEditing =
+                              editingCell?.rowIndex === rowIndex &&
+                              editingCell?.colIndex === colIndex;
+
+                            const cellContent = String(cell ?? "");
+                            const isEmpty = cellContent.trim() === "";
+
+                            return (
+                              <td
+                                key={colIndex}
+                                onDoubleClick={() =>
+                                  startEditing(rowIndex, colIndex, cell)
+                                }
+                                className={cn(
+                                  "relative min-w-25 cursor-pointer px-6 py-4 font-medium whitespace-nowrap text-slate-300",
+                                  colIndex % 2 !== 0 && "bg-slate-700/20",
+                                  isEditing && "p-0",
+                                )}
+                              >
+                                {isEditing ? (
+                                  <input
+                                    autoFocus
+                                    type="text"
+                                    value={tempValue}
+                                    onChange={(e) =>
+                                      setTempValue(e.target.value)
+                                    }
+                                    onBlur={saveEdit}
+                                    onKeyDown={handleKeyDown}
+                                    className="h-full w-full rounded border-2 border-blue-500 bg-slate-600 px-2 py-1.5 text-white outline-none"
+                                  />
+                                ) : (
+                                  <>
+                                    {isEmpty && (
+                                      <span className="absolute top-1 left-1 text-[10px] leading-none text-slate-400 italic opacity-60 select-none">
+                                        Empty
+                                      </span>
+                                    )}
+                                    {cellContent}
+                                  </>
+                                )}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : (
+            // Placeholder when no file is uploaded
+            <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-800/50">
+              <span className="text-slate-500">Upload a file to view data</span>
+            </div>
+          )}
         </div>
-      )}
+
+        {/* Right Side: Gemini Chat Sidebar */}
+        <div className="w-[20%] min-w-[320px]">
+          <GeminiChat data={fileData} onDataUpdate={setFileData} />
+        </div>
+      </div>
     </div>
   );
 }
