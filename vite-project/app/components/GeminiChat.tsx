@@ -103,7 +103,7 @@ const GeminiChat = ({ className, data, onDataUpdate }: GeminiChatProps) => {
   const [currentModel, setCurrentModel] = useState<string>(DEFAULT_MODEL);
   const [failedModels, setFailedModels] = useState<string[]>([]);
 
-  // New: Log specific model switches to display to user
+  // Log specific model switches
   const [retryLog, setRetryLog] = useState<string[]>([]);
 
   // File State
@@ -164,7 +164,6 @@ const GeminiChat = ({ className, data, onDataUpdate }: GeminiChatProps) => {
   const clearFile = () => setSelectedFile(null);
 
   // 2. Recursive Generation Logic
-  // We pass 'currentFailedList' explicitly so recursion doesn't need to wait for React state updates
   const tryGenerateContent = async (
     modelName: string,
     parts: any[],
@@ -177,35 +176,26 @@ const GeminiChat = ({ className, data, onDataUpdate }: GeminiChatProps) => {
       const result = await model.generateContent(parts);
       const responseText = result.response.text();
 
-      // Success: Update the official state
       setCurrentModel(modelName);
-      // Sync the failed list state for the UI (disable options)
       setFailedModels(currentFailedList);
 
       return responseText;
     } catch (err) {
       console.warn(`Model ${modelName} failed:`, err);
 
-      // Add to local failed list
       const newFailedList = [...currentFailedList, modelName];
-
-      // Find next available model not in the failed list
       const nextModelIndex = availableModels.indexOf(modelName) + 1;
       const nextModel = availableModels
         .slice(nextModelIndex)
         .find((m) => !newFailedList.includes(m));
 
       if (nextModel) {
-        // Log the switch for the UI
         setRetryLog((prev) => [
           ...prev,
           `${modelName} failed → switching to ${nextModel}`,
         ]);
-
-        // Recursive retry
         return tryGenerateContent(nextModel, parts, newFailedList);
       } else {
-        // Update state so UI shows everything red
         setFailedModels(newFailedList);
         throw new Error("All available models failed.");
       }
@@ -218,9 +208,8 @@ const GeminiChat = ({ className, data, onDataUpdate }: GeminiChatProps) => {
     setLoading(true);
     setError("");
     setResponse("");
-    setRetryLog([]); // Clear previous warning logs
+    setRetryLog([]);
 
-    // Construct Prompt
     const parts: any[] = [];
     let systemInstruction = `You are an AI assistant integrated into a spreadsheet editor.`;
 
@@ -252,10 +241,8 @@ const GeminiChat = ({ className, data, onDataUpdate }: GeminiChatProps) => {
     parts.push({ text: `${systemInstruction}\n\nUser Question: ${prompt}` });
 
     try {
-      // Start recursion with current model and current known failures
       const text = await tryGenerateContent(currentModel, parts, failedModels);
 
-      // Parse Updates
       const updateMatch = text.match(/```json_update\s*([\s\S]*?)\s*```/);
       if (updateMatch && updateMatch[1]) {
         try {
@@ -340,7 +327,6 @@ const GeminiChat = ({ className, data, onDataUpdate }: GeminiChatProps) => {
           </div>
         )}
 
-        {/* Retry Warnings - Shown above response */}
         {retryLog.length > 0 && (
           <div className="flex flex-col gap-1">
             {retryLog.map((log, idx) => (
