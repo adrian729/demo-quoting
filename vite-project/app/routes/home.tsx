@@ -5,7 +5,7 @@ import {
   type ChangeEvent,
   type KeyboardEvent,
 } from "react";
-import GeminiChat from "~/components/GeminiChat";
+import GeminiChat, { SparklesIcon } from "~/components/GeminiChat";
 import { cn } from "~/utils/cn";
 import {
   isOfTypeSupportedExportType,
@@ -163,6 +163,9 @@ export default function Home() {
   const [error, setError] = useState<string>();
   const [detectedFormat, setDetectedFormat] =
     useState<SupportedExportType>("xlsx");
+
+  // Chat State
+  const [isChatOpen, setIsChatOpen] = useState(false);
 
   // Metadata for highlighting changes
   const [editMetadata, setEditMetadata] = useState<Record<string, EditSource>>(
@@ -385,7 +388,7 @@ export default function Home() {
           className={cn(
             "flex min-w-35 items-center justify-center px-4 py-2",
             "border border-slate-600 bg-slate-700 hover:bg-slate-600",
-            "cursor-pointer rounded-lg transition-colors", // Explicit cursor-pointer
+            "cursor-pointer rounded-lg transition-colors",
             "text-sm font-semibold text-white",
           )}
         >
@@ -408,7 +411,7 @@ export default function Home() {
                 "rounded p-2 transition-colors hover:bg-slate-800",
                 !canUndo
                   ? "cursor-not-allowed opacity-30"
-                  : "cursor-pointer text-slate-300 hover:text-white", // Explicit cursor-pointer
+                  : "cursor-pointer text-slate-300 hover:text-white",
               )}
               title="Undo"
             >
@@ -421,7 +424,7 @@ export default function Home() {
                 "rounded p-2 transition-colors hover:bg-slate-800",
                 !canRedo
                   ? "cursor-not-allowed opacity-30"
-                  : "cursor-pointer text-slate-300 hover:text-white", // Explicit cursor-pointer
+                  : "cursor-pointer text-slate-300 hover:text-white",
               )}
               title="Redo"
             >
@@ -477,9 +480,9 @@ export default function Home() {
       </div>
 
       {/* 2. Main Content */}
-      <div className="flex flex-1 gap-6 overflow-hidden">
+      <div className="relative flex flex-1 gap-6 overflow-hidden">
         {/* Left Side: Data Table */}
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-w-0 flex-1 flex-col transition-all duration-300">
           {fileData ? (
             <div className="flex-1 overflow-hidden rounded-lg border border-slate-700 bg-slate-800 shadow-lg">
               <div className="h-full overflow-auto">
@@ -503,7 +506,7 @@ export default function Home() {
                               startEditing(rowIndex, colIndex, header)
                             }
                             className={cn(
-                              "cursor-pointer border-b border-slate-700 px-6 py-3 tracking-wider whitespace-nowrap hover:bg-slate-800", // Explicit cursor-pointer
+                              "cursor-pointer border-b border-slate-700 px-6 py-3 tracking-wider whitespace-nowrap hover:bg-slate-800",
                               !highlight &&
                                 (colIndex % 2 === 0
                                   ? "bg-slate-900"
@@ -553,7 +556,7 @@ export default function Home() {
                                   startEditing(rowIndex, colIndex, cell)
                                 }
                                 className={cn(
-                                  "relative min-w-25 cursor-pointer px-6 py-4 font-medium whitespace-nowrap text-slate-300", // Explicit cursor-pointer
+                                  "relative min-w-25 cursor-pointer px-6 py-4 font-medium whitespace-nowrap text-slate-300",
                                   !highlight &&
                                     (colIndex % 2 !== 0
                                       ? "bg-slate-700/20"
@@ -603,10 +606,26 @@ export default function Home() {
         </div>
 
         {/* Right Side: Gemini Chat */}
-        <div className="w-[20%] min-w-[320px]">
-          <GeminiChat data={fileData} onDataUpdate={handleGeminiUpdate} />
-        </div>
+        {isChatOpen && (
+          <div className="w-[20%] min-w-[320px] transition-all duration-300">
+            <GeminiChat
+              data={fileData}
+              onDataUpdate={handleGeminiUpdate}
+              onClose={() => setIsChatOpen(false)}
+            />
+          </div>
+        )}
       </div>
+
+      {/* Floating Chat Button (When closed) */}
+      {!isChatOpen && (
+        <button
+          onClick={() => setIsChatOpen(true)}
+          className="fixed right-8 bottom-8 z-50 flex cursor-pointer items-center gap-2 rounded-full border border-slate-600 bg-slate-800 px-3 py-3 text-slate-200 shadow-xl transition-all hover:bg-slate-700 hover:text-white hover:shadow-2xl"
+        >
+          <SparklesIcon className="h-5 w-5 text-purple-400" />
+        </button>
+      )}
 
       {/* --- Reset Confirmation Dialog --- */}
       {isResetDialogOpen && (

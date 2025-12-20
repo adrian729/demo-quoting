@@ -6,7 +6,7 @@ const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const DEFAULT_MODEL = "gemini-2.0-flash";
 
 // --- Icons ---
-const SparklesIcon = ({ className }: { className?: string }) => (
+export const SparklesIcon = ({ className }: { className?: string }) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     className={className}
@@ -88,9 +88,15 @@ interface GeminiChatProps {
   className?: string;
   data?: unknown[][];
   onDataUpdate?: (newData: unknown[][]) => void;
+  onClose?: () => void; // Added Prop
 }
 
-const GeminiChat = ({ className, data, onDataUpdate }: GeminiChatProps) => {
+const GeminiChat = ({
+  className,
+  data,
+  onDataUpdate,
+  onClose,
+}: GeminiChatProps) => {
   const [prompt, setPrompt] = useState("");
   const [response, setResponse] = useState("");
   const [loading, setLoading] = useState(false);
@@ -103,7 +109,6 @@ const GeminiChat = ({ className, data, onDataUpdate }: GeminiChatProps) => {
   const [currentModel, setCurrentModel] = useState<string>(DEFAULT_MODEL);
   const [failedModels, setFailedModels] = useState<string[]>([]);
 
-  // Log specific model switches
   const [retryLog, setRetryLog] = useState<string[]>([]);
 
   // File State
@@ -289,21 +294,34 @@ const GeminiChat = ({ className, data, onDataUpdate }: GeminiChatProps) => {
           <h2 className="text-lg font-bold text-slate-100">Gemini</h2>
         </div>
 
-        <select
-          value={currentModel}
-          onChange={(e) => setCurrentModel(e.target.value)}
-          className="max-w-[140px] truncate rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:border-blue-500 focus:outline-none"
-          disabled={loading}
-        >
-          {availableModels.map((model) => {
-            const isFailed = failedModels.includes(model);
-            return (
-              <option key={model} value={model} disabled={isFailed}>
-                {model} {isFailed ? "(Failed)" : ""}
-              </option>
-            );
-          })}
-        </select>
+        <div className="flex items-center gap-2">
+          <select
+            value={currentModel}
+            onChange={(e) => setCurrentModel(e.target.value)}
+            className="max-w-35 truncate rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:border-blue-500 focus:outline-none"
+            disabled={loading}
+          >
+            {availableModels.map((model) => {
+              const isFailed = failedModels.includes(model);
+              return (
+                <option key={model} value={model} disabled={isFailed}>
+                  {model} {isFailed ? "(Failed)" : ""}
+                </option>
+              );
+            })}
+          </select>
+
+          {/* Close Button */}
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="ml-2 cursor-pointer rounded p-1 text-slate-400 transition-colors hover:bg-slate-700 hover:text-white"
+              title="Close Chat"
+            >
+              <XIcon className="h-4 w-4" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Content Area */}
