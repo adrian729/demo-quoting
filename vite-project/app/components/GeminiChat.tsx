@@ -1,6 +1,9 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { cn } from "~/utils/cn";
+
+const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+const DEFAULT_MODEL = "gemini-2.0-flash";
 
 // --- Icons ---
 const SparklesIcon = ({ className }: { className?: string }) => (
@@ -19,7 +22,6 @@ const SparklesIcon = ({ className }: { className?: string }) => (
     />
   </svg>
 );
-
 const SendIcon = ({ className }: { className?: string }) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
@@ -36,7 +38,6 @@ const SendIcon = ({ className }: { className?: string }) => (
     />
   </svg>
 );
-
 const PaperClipIcon = ({ className }: { className?: string }) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
@@ -53,7 +54,6 @@ const PaperClipIcon = ({ className }: { className?: string }) => (
     />
   </svg>
 );
-
 const XIcon = ({ className }: { className?: string }) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
@@ -71,7 +71,6 @@ const XIcon = ({ className }: { className?: string }) => (
   </svg>
 );
 
-// Helper to read file as Base64
 const readFileAsBase64 = (file: File): Promise<string> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -87,8 +86,8 @@ const readFileAsBase64 = (file: File): Promise<string> => {
 
 interface GeminiChatProps {
   className?: string;
-  data?: unknown[][]; // Current table data
-  onDataUpdate?: (newData: unknown[][]) => void; // Function to update table
+  data?: unknown[][];
+  onDataUpdate?: (newData: unknown[][]) => void;
 }
 
 const GeminiChat = ({ className, data, onDataUpdate }: GeminiChatProps) => {
@@ -97,19 +96,61 @@ const GeminiChat = ({ className, data, onDataUpdate }: GeminiChatProps) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
+  // Model Management
+  const [availableModels, setAvailableModels] = useState<string[]>([
+    DEFAULT_MODEL,
+  ]);
+  const [currentModel, setCurrentModel] = useState<string>(DEFAULT_MODEL);
+  const [failedModels, setFailedModels] = useState<string[]>([]);
+
+  // New: Log specific model switches to display to user
+  const [retryLog, setRetryLog] = useState<string[]>([]);
+
+  // File State
   const [selectedFile, setSelectedFile] = useState<{
     file: File;
     base64: string;
   } | null>(null);
-
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+
+  // 1. Fetch Models on Mount
+  useEffect(() => {
+    async function listAllModels() {
+      try {
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models?key=${API_KEY}`,
+        );
+        const data = await response.json();
+
+        if (data.models) {
+          const generateModels = data.models
+            .filter((m: any) =>
+              m.supportedGenerationMethods.includes("generateContent"),
+            )
+            .map((m: any) => m.name.replace("models/", ""));
+
+          generateModels.sort((a: string, b: string) => {
+            if (a === DEFAULT_MODEL) return -1;
+            if (b === DEFAULT_MODEL) return 1;
+            return 0;
+          });
+
+          setAvailableModels(generateModels);
+          if (generateModels.length > 0) {
+            setCurrentModel(generateModels[0]);
+          }
+        }
+      } catch (error) {
+        console.error("Error listing models:", error);
+      }
+    }
+    listAllModels();
+  }, []);
 
   const handleFileSelect = async (e: ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.length) return;
     const file = e.target.files[0];
     setError("");
-
     try {
       const base64 = await readFileAsBase64(file);
       setSelectedFile({ file, base64 });
@@ -120,8 +161,55 @@ const GeminiChat = ({ className, data, onDataUpdate }: GeminiChatProps) => {
     e.target.value = "";
   };
 
-  const clearFile = () => {
-    setSelectedFile(null);
+  const clearFile = () => setSelectedFile(null);
+
+  // 2. Recursive Generation Logic
+  // We pass 'currentFailedList' explicitly so recursion doesn't need to wait for React state updates
+  const tryGenerateContent = async (
+    modelName: string,
+    parts: any[],
+    currentFailedList: string[],
+  ): Promise<string> => {
+    const genAI = new GoogleGenerativeAI(API_KEY);
+    const model = genAI.getGenerativeModel({ model: modelName });
+
+    try {
+      const result = await model.generateContent(parts);
+      const responseText = result.response.text();
+
+      // Success: Update the official state
+      setCurrentModel(modelName);
+      // Sync the failed list state for the UI (disable options)
+      setFailedModels(currentFailedList);
+
+      return responseText;
+    } catch (err) {
+      console.warn(`Model ${modelName} failed:`, err);
+
+      // Add to local failed list
+      const newFailedList = [...currentFailedList, modelName];
+
+      // Find next available model not in the failed list
+      const nextModelIndex = availableModels.indexOf(modelName) + 1;
+      const nextModel = availableModels
+        .slice(nextModelIndex)
+        .find((m) => !newFailedList.includes(m));
+
+      if (nextModel) {
+        // Log the switch for the UI
+        setRetryLog((prev) => [
+          ...prev,
+          `${modelName} failed → switching to ${nextModel}`,
+        ]);
+
+        // Recursive retry
+        return tryGenerateContent(nextModel, parts, newFailedList);
+      } else {
+        // Update state so UI shows everything red
+        setFailedModels(newFailedList);
+        throw new Error("All available models failed.");
+      }
+    }
   };
 
   const fetchResponse = async () => {
@@ -130,65 +218,50 @@ const GeminiChat = ({ className, data, onDataUpdate }: GeminiChatProps) => {
     setLoading(true);
     setError("");
     setResponse("");
+    setRetryLog([]); // Clear previous warning logs
+
+    // Construct Prompt
+    const parts: any[] = [];
+    let systemInstruction = `You are an AI assistant integrated into a spreadsheet editor.`;
+
+    if (data && data.length > 0) {
+      systemInstruction += `
+      \n\nCURRENT SPREADSHEET DATA (JSON Array of Arrays):
+      ${JSON.stringify(data.slice(0, 500))} 
+      (Note: Only the first 500 rows are shown to you to save context)
+
+      INSTRUCTIONS:
+      1. Answer questions based on the JSON above.
+      2. If asked to MODIFY data, return the COMPLETE updated dataset wrapped in a 'json_update' code block.
+      Example:
+      \`\`\`json_update
+      [["Name", "Email"], ["Alice", "alice@test.com"]]
+      \`\`\`
+      `;
+    }
+
+    if (selectedFile) {
+      parts.push({
+        inlineData: {
+          data: selectedFile.base64,
+          mimeType: selectedFile.file.type || "text/plain",
+        },
+      });
+    }
+
+    parts.push({ text: `${systemInstruction}\n\nUser Question: ${prompt}` });
 
     try {
-      const genAI = new GoogleGenerativeAI(API_KEY);
-      const model = genAI.getGenerativeModel({
-        model: "gemini-2.5-flash-lite",
-      });
+      // Start recursion with current model and current known failures
+      const text = await tryGenerateContent(currentModel, parts, failedModels);
 
-      const parts: any[] = [];
-
-      // 1. Construct the System Prompt with Data Context
-      let systemInstruction = `You are an AI assistant integrated into a spreadsheet editor.`;
-
-      if (data && data.length > 0) {
-        systemInstruction += `
-        \n\nCURRENT SPREADSHEET DATA (JSON Array of Arrays):
-        ${JSON.stringify(data.slice(0, 500))} 
-        (Note: Only the first 500 rows are shown to you to save context)
-
-        INSTRUCTIONS:
-        1. If the user asks a question about the data, answer based on the JSON above.
-        2. If the user asks to MODIFY the data (e.g., "Add a column", "Delete row 1", "Make all emails lowercase"), you MUST return the COMPLETE updated dataset.
-        3. To update the data, you must wrap the new JSON 2D array strictly inside a code block labeled 'json_update'.
-        
-        Example of update response:
-        "I have updated the emails to lowercase.
-        \`\`\`json_update
-        [["Name", "Email"], ["Alice", "alice@test.com"]]
-        \`\`\`"
-        
-        4. Do NOT use the 'json_update' block unless you are actually changing the data.
-        `;
-      }
-
-      // Add file if attached (image/pdf context)
-      if (selectedFile) {
-        parts.push({
-          inlineData: {
-            data: selectedFile.base64,
-            mimeType: selectedFile.file.type || "text/plain",
-          },
-        });
-      }
-
-      // Add the user prompt combined with system instruction
-      // (Gemini API treats the first part as context often, or we can just prepend it)
-      parts.push({ text: `${systemInstruction}\n\nUser Question: ${prompt}` });
-
-      const result = await model.generateContent(parts);
-      const text = result.response.text();
-
-      // --- Parse for Data Updates ---
+      // Parse Updates
       const updateMatch = text.match(/```json_update\s*([\s\S]*?)\s*```/);
-
       if (updateMatch && updateMatch[1]) {
         try {
           const newData = JSON.parse(updateMatch[1]);
           if (Array.isArray(newData) && onDataUpdate) {
             onDataUpdate(newData);
-            // Remove the JSON block from the displayed response to keep it clean
             setResponse(
               text.replace(
                 updateMatch[0],
@@ -199,7 +272,6 @@ const GeminiChat = ({ className, data, onDataUpdate }: GeminiChatProps) => {
             setResponse(text);
           }
         } catch (e) {
-          console.error("Failed to parse AI update:", e);
           setResponse(
             text +
               "\n\n⚠️ *Attempted to update data but failed to parse JSON.*",
@@ -210,7 +282,7 @@ const GeminiChat = ({ className, data, onDataUpdate }: GeminiChatProps) => {
       }
     } catch (err) {
       console.error("Gemini API Error:", err);
-      setError("Failed to generate response.");
+      setError("Failed to generate response. All models may be busy.");
     } finally {
       setLoading(false);
     }
@@ -224,9 +296,27 @@ const GeminiChat = ({ className, data, onDataUpdate }: GeminiChatProps) => {
       )}
     >
       {/* Header */}
-      <div className="flex items-center gap-2 border-b border-slate-700 p-4">
-        <SparklesIcon className="h-5 w-5 text-blue-400" />
-        <h2 className="text-lg font-bold text-slate-100">Gemini Assistant</h2>
+      <div className="flex items-center justify-between border-b border-slate-700 p-4">
+        <div className="flex items-center gap-2">
+          <SparklesIcon className="h-5 w-5 text-blue-400" />
+          <h2 className="text-lg font-bold text-slate-100">Gemini</h2>
+        </div>
+
+        <select
+          value={currentModel}
+          onChange={(e) => setCurrentModel(e.target.value)}
+          className="max-w-[140px] truncate rounded border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:border-blue-500 focus:outline-none"
+          disabled={loading}
+        >
+          {availableModels.map((model) => {
+            const isFailed = failedModels.includes(model);
+            return (
+              <option key={model} value={model} disabled={isFailed}>
+                {model} {isFailed ? "(Failed)" : ""}
+              </option>
+            );
+          })}
+        </select>
       </div>
 
       {/* Content Area */}
@@ -237,16 +327,30 @@ const GeminiChat = ({ className, data, onDataUpdate }: GeminiChatProps) => {
               <span className="text-sm font-semibold text-emerald-400">
                 Attached:
               </span>
-              <span className="max-w-[150px] truncate text-sm text-emerald-300">
+              <span className="max-w-[120px] truncate text-sm text-emerald-300">
                 {selectedFile.file.name}
               </span>
             </div>
             <button
               onClick={clearFile}
-              className="ml-2 rounded-full p-1 text-emerald-400 hover:bg-emerald-900/50 hover:text-emerald-200"
+              className="ml-2 rounded-full p-1 text-emerald-400 hover:bg-emerald-900/50"
             >
               <XIcon className="h-4 w-4" />
             </button>
+          </div>
+        )}
+
+        {/* Retry Warnings - Shown above response */}
+        {retryLog.length > 0 && (
+          <div className="flex flex-col gap-1">
+            {retryLog.map((log, idx) => (
+              <div
+                key={idx}
+                className="rounded border border-red-900/30 bg-red-900/10 px-2 py-1 text-[10px] font-medium text-red-400"
+              >
+                ⚠️ {log}
+              </div>
+            ))}
           </div>
         )}
 
@@ -258,9 +362,14 @@ const GeminiChat = ({ className, data, onDataUpdate }: GeminiChatProps) => {
 
         {response && (
           <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-4">
-            <strong className="mb-2 block text-xs tracking-wider text-blue-400 uppercase">
-              Response
-            </strong>
+            <div className="mb-2 flex items-center justify-between">
+              <strong className="block text-xs tracking-wider text-blue-400 uppercase">
+                Response
+              </strong>
+              <span className="text-[10px] text-slate-500">
+                Model: {currentModel}
+              </span>
+            </div>
             <div className="text-sm leading-relaxed whitespace-pre-wrap text-slate-300">
               {response}
             </div>
@@ -274,9 +383,7 @@ const GeminiChat = ({ className, data, onDataUpdate }: GeminiChatProps) => {
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           placeholder={
-            data
-              ? "Ask to filter, sort, or edit the table..."
-              : "Ask a question..."
+            data ? "Ask to filter or edit data..." : "Ask a question..."
           }
           rows={3}
           className="mb-3 w-full resize-none rounded-lg border border-slate-600 bg-slate-900 p-3 text-sm text-slate-200 placeholder-slate-500 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
@@ -292,7 +399,6 @@ const GeminiChat = ({ className, data, onDataUpdate }: GeminiChatProps) => {
           <button
             onClick={() => fileInputRef.current?.click()}
             className="flex items-center gap-2 rounded-lg px-2 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-slate-700 hover:text-white"
-            title="Upload File"
           >
             <PaperClipIcon className="h-5 w-5" />
           </button>
