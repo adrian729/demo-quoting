@@ -86,52 +86,104 @@ const RedoIcon = ({ className }: { className?: string }) => (
 );
 
 // --- Export Actions Component ---
-interface ExportActionsProps<T extends object> {
-  data: T[];
-  fileName?: string;
+interface ExportActionsProps {
+  data: unknown[][];
+  fileName: string;
+  onFileNameChange: (newName: string) => void;
   initialFormat?: SupportedExportType;
 }
 
-const ExportActions = <T extends object>({
+const ExportActions = ({
   data,
-  fileName = "export",
+  fileName,
+  onFileNameChange,
   initialFormat = "xlsx",
-}: ExportActionsProps<T>) => {
+}: ExportActionsProps) => {
   const [format, setFormat] = useState<SupportedExportType>(initialFormat);
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [tempName, setTempName] = useState(fileName);
+
+  useEffect(() => {
+    setTempName(fileName);
+  }, [fileName]);
 
   useEffect(() => {
     setFormat(initialFormat);
   }, [initialFormat]);
 
+  const saveName = () => {
+    setIsEditingName(false);
+    if (tempName.trim()) {
+      onFileNameChange(tempName.trim());
+    } else {
+      setTempName(fileName); // Revert if empty
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") saveName();
+    if (e.key === "Escape") {
+      setIsEditingName(false);
+      setTempName(fileName);
+    }
+  };
+
   if (!data || data.length === 0) return null;
 
   return (
     <div className="ml-auto flex items-center gap-2">
-      <div className="relative">
+      {/* Filename Editor */}
+      <div className="flex items-center justify-end">
+        {isEditingName ? (
+          <input
+            autoFocus
+            type="text"
+            value={tempName}
+            onChange={(e) => setTempName(e.target.value)}
+            onBlur={saveName}
+            onKeyDown={handleKeyDown}
+            className="w-40 rounded border border-blue-500 bg-slate-800 px-2 py-1 text-right text-sm text-white outline-none"
+          />
+        ) : (
+          <span
+            onDoubleClick={() => setIsEditingName(true)}
+            title="Double click to rename"
+            className="cursor-text truncate px-2 py-1 text-sm font-medium text-slate-300 transition-colors hover:text-white"
+          >
+            {fileName || "untitled"}
+          </span>
+        )}
+        <span className="text-slate-500">.</span>
+      </div>
+
+      {/* Styled Dropdown */}
+      <div className="group relative">
         <select
           value={format}
           onChange={(e) => {
             const val = e.target.value;
             if (isOfTypeSupportedExportType(val)) setFormat(val);
           }}
-          className="cursor-pointer appearance-none rounded-lg border border-slate-600 bg-slate-700 py-2 pr-8 pl-3 text-sm font-medium text-slate-200 shadow-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+          className="cursor-pointer appearance-none rounded py-1 pr-7 pl-2 text-sm font-bold text-slate-300 uppercase transition-colors hover:bg-slate-800 hover:text-white focus:ring-2 focus:ring-blue-500/50 focus:outline-none"
         >
           {SUPPORTED_EXPORT_TYPES.map((option) => (
-            <option key={option} value={option}>
+            <option key={option} value={option} className="text-slate-900">
               {option.toUpperCase()}
             </option>
           ))}
         </select>
-        <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-400">
+        {/* Custom Chevron Arrow */}
+        <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-1 text-slate-500 transition-colors group-hover:text-white">
           <svg
             className="h-4 w-4 fill-current"
             xmlns="http://www.w3.org/2000/svg"
             viewBox="0 0 20 20"
           >
-            <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z" />
+            <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" />
           </svg>
         </div>
       </div>
+
       <button
         onClick={() => saveToExcel(data, fileName, format)}
         className="flex cursor-pointer items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-500 active:scale-95"
@@ -159,7 +211,13 @@ const MAX_HISTORY = 10;
 
 export default function Home() {
   const [fileData, setFileData] = useState<unknown[][]>();
+
+  // 'fileName' is the export name (without extension, editable)
   const [fileName, setFileName] = useState<string>("");
+
+  // 'uploadedFileName' is the original file name (with extension, for upload button)
+  const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+
   const [error, setError] = useState<string>();
   const [detectedFormat, setDetectedFormat] =
     useState<SupportedExportType>("xlsx");
@@ -190,6 +248,22 @@ export default function Home() {
   const [tempValue, setTempValue] = useState<string>("");
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
 
+  // --- Keyboard Shortcuts ---
+  // Ctrl+S / Cmd+S to save
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: globalThis.KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+        e.preventDefault();
+        if (fileData && fileData.length > 0) {
+          saveToExcel(fileData, fileName || "data", detectedFormat);
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, [fileData, fileName, detectedFormat]);
+
   // --- Undo / Redo Logic ---
 
   const commitToHistory = useCallback(() => {
@@ -197,13 +271,11 @@ export default function Home() {
 
     setHistory((prev) => {
       const newHistory = [...prev, { data: fileData, metadata: editMetadata }];
-      // Limit to MAX_HISTORY
       if (newHistory.length > MAX_HISTORY) {
         return newHistory.slice(newHistory.length - MAX_HISTORY);
       }
       return newHistory;
     });
-    // Clear future when a new action is taken
     setFuture([]);
   }, [fileData, editMetadata]);
 
@@ -213,10 +285,7 @@ export default function Home() {
     const previousState = history[history.length - 1];
     const newHistory = history.slice(0, -1);
 
-    // Save current state to future
     setFuture((prev) => [{ data: fileData, metadata: editMetadata }, ...prev]);
-
-    // Restore past state
     setFileData(previousState.data);
     setEditMetadata(previousState.metadata);
     setHistory(newHistory);
@@ -228,10 +297,7 @@ export default function Home() {
     const nextState = future[0];
     const newFuture = future.slice(1);
 
-    // Save current state to history
     setHistory((prev) => [...prev, { data: fileData, metadata: editMetadata }]);
-
-    // Restore future state
     setFileData(nextState.data);
     setEditMetadata(nextState.metadata);
     setFuture(newFuture);
@@ -242,6 +308,7 @@ export default function Home() {
   const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.length) return;
     const inputFile = e.target.files[0];
+
     setError(undefined);
     setEditingCell(null);
     setEditMetadata({});
@@ -254,11 +321,24 @@ export default function Home() {
         setError("The file is empty or has no valid data");
         return;
       }
+
+      const lastDotIndex = inputFile.name.lastIndexOf(".");
+      const nameWithoutExt =
+        lastDotIndex !== -1
+          ? inputFile.name.substring(0, lastDotIndex)
+          : inputFile.name;
+
+      const ext =
+        lastDotIndex !== -1
+          ? inputFile.name.substring(lastDotIndex + 1).toLowerCase()
+          : "";
+
       setFileData(rawData);
       setOriginalFileData(rawData);
-      setFileName(inputFile.name);
 
-      const ext = inputFile.name.split(".").pop()?.toLowerCase();
+      setUploadedFileName(inputFile.name); // Keep original for upload button
+      setFileName(nameWithoutExt); // Strip extension for export name
+
       if (isOfTypeSupportedExportType(ext)) {
         setDetectedFormat(ext);
       } else {
@@ -296,10 +376,8 @@ export default function Home() {
   const handleGeminiUpdate = (newData: unknown[][]) => {
     const newMetadata = { ...editMetadata };
 
-    // Diff logic to mark AI edits
     newData.forEach((row, rIndex) => {
       const isNewRow = !fileData || rIndex >= fileData.length;
-
       row.forEach((cell, cIndex) => {
         if (isNewRow) {
           newMetadata[`${rIndex}-${cIndex}`] = "ai";
@@ -330,6 +408,7 @@ export default function Home() {
     const newData = [...fileData];
     const newRow = [...(newData[rowIndex] as unknown[])];
 
+    // Always save as string
     if (String(newRow[colIndex]) !== tempValue) {
       commitToHistory();
 
@@ -358,14 +437,6 @@ export default function Home() {
   const headers = fileData?.[0] || [];
   const bodyRows = fileData?.slice(1) || [];
 
-  const exportData = bodyRows.map((row) => {
-    const rowObj: Record<string, unknown> = {};
-    headers.forEach((header, index) => {
-      rowObj[String(header)] = row[index];
-    });
-    return rowObj;
-  });
-
   const getCellHighlightClass = (rowIndex: number, colIndex: number) => {
     const source = editMetadata[`${rowIndex}-${colIndex}`];
     if (source === "user")
@@ -392,7 +463,7 @@ export default function Home() {
             "text-sm font-semibold text-white",
           )}
         >
-          {fileName || "Choose File..."}
+          {uploadedFileName || "Choose File..."}
           <input
             type="file"
             accept=".csv,.xls,.xlsx,.txt"
@@ -472,8 +543,9 @@ export default function Home() {
         )}
         {fileData && (
           <ExportActions
-            data={exportData}
+            data={fileData}
             fileName={fileName || "edited_data"}
+            onFileNameChange={(name) => setFileName(name)}
             initialFormat={detectedFormat}
           />
         )}
@@ -606,7 +678,6 @@ export default function Home() {
         </div>
 
         {/* Right Side: Gemini Chat */}
-        {/* We keep the component mounted but hidden when closed to preserve state */}
         <div
           className={cn(
             "w-[20%] min-w-[320px] transition-all duration-300",

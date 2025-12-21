@@ -39,8 +39,11 @@ export async function parseFile(file: File): Promise<unknown[][]> {
   const worksheetName = workbook.SheetNames[0];
   const worksheet = workbook.Sheets[worksheetName];
 
+  // UPDATED: added 'raw: false' and 'defval: ""'
   const jsonData = XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
     header: 1,
+    raw: false, // Forces all values to be strings (exactly as formatted in Excel)
+    defval: "", // Ensures empty cells are strings instead of undefined
   });
 
   return cleanupData(jsonData);
@@ -68,16 +71,18 @@ export const isOfTypeSupportedExportType = (
   );
 };
 
-export const saveToExcel = <T extends object>(
-  data: T[],
+export const saveToExcel = (
+  data: unknown[][], // Changed from T[] to unknown[][]
   fileName: string,
   format: SupportedExportType,
 ): void => {
-  const worksheet = XLSX.utils.json_to_sheet(data);
+  // Use aoa_to_sheet instead of json_to_sheet
+  // This preserves duplicate headers and order perfectly
+  const worksheet = XLSX.utils.aoa_to_sheet(data);
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
 
-  const nameWithoutExtension = fileName.replace(/\.(xlsx|csv)$/, "");
+  const nameWithoutExtension = fileName.replace(/\.(xlsx|csv|xls)$/, "");
   const finalFileName = `${nameWithoutExtension}.${format}`;
   XLSX.writeFile(workbook, finalFileName);
 };
