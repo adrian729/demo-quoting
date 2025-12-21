@@ -18,12 +18,16 @@ function removeColumn(data: unknown[][], colIndex: number): unknown[][] {
 }
 
 export function cleanupData(data: (unknown[] | undefined | null)[]) {
+  // 1. Remove empty rows first
   let cleanData = data
     .filter((row) => row != null)
     .filter((row) => !isRowEmpty(row));
 
+  if (cleanData.length === 0) return [];
+
+  // 2. Remove empty columns (Iterating BACKWARDS)
   const rowLength = cleanData[0]?.length || 0;
-  for (let i = 0; i < rowLength; i++) {
+  for (let i = rowLength - 1; i >= 0; i--) {
     if (isColumnEmpty(cleanData, i)) {
       cleanData = removeColumn(cleanData, i);
     }
@@ -33,17 +37,29 @@ export function cleanupData(data: (unknown[] | undefined | null)[]) {
 }
 
 export async function parseFile(file: File): Promise<unknown[][]> {
-  const data = await file.arrayBuffer();
-  const workbook = XLSX.read(data);
+  const arrayBuffer = await file.arrayBuffer();
+  let workbook;
+
+  // FIX: Check for ALL text-based formats that might have encoding issues
+  const isTextFormat = file.name.match(/\.(csv|txt|html|htm)$/i);
+
+  if (isTextFormat) {
+    // Force UTF-8 decoding for text formats
+    const textDecoder = new TextDecoder("utf-8");
+    const textData = textDecoder.decode(arrayBuffer);
+    workbook = XLSX.read(textData, { type: "string" });
+  } else {
+    // For binary files (xlsx, xls, ods, numbers), read the buffer directly
+    workbook = XLSX.read(arrayBuffer);
+  }
 
   const worksheetName = workbook.SheetNames[0];
   const worksheet = workbook.Sheets[worksheetName];
 
-  // UPDATED: added 'raw: false' and 'defval: ""'
   const jsonData = XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
     header: 1,
-    raw: false, // Forces all values to be strings (exactly as formatted in Excel)
-    defval: "", // Ensures empty cells are strings instead of undefined
+    raw: false,
+    defval: "",
   });
 
   return cleanupData(jsonData);
@@ -72,12 +88,10 @@ export const isOfTypeSupportedExportType = (
 };
 
 export const saveToExcel = (
-  data: unknown[][], // Changed from T[] to unknown[][]
+  data: unknown[][],
   fileName: string,
   format: SupportedExportType,
 ): void => {
-  // Use aoa_to_sheet instead of json_to_sheet
-  // This preserves duplicate headers and order perfectly
   const worksheet = XLSX.utils.aoa_to_sheet(data);
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");

@@ -18,6 +18,7 @@ import {
   isOfTypeSupportedExportType,
   parseFile,
   saveToExcel,
+  SUPPORTED_EXPORT_TYPES, // Make sure this is imported
   type SupportedExportType,
 } from "~/utils/excelUtils";
 import type { Route } from "./+types/home";
@@ -35,6 +36,11 @@ export function meta({}: Route.MetaArgs) {
 }
 
 const MAX_HISTORY = 10;
+
+// NEW: specific constant for the file input
+const ACCEPTED_FILE_TYPES = SUPPORTED_EXPORT_TYPES.map((t) => `.${t}`).join(
+  ",",
+);
 
 export default function Home() {
   const [fileData, setFileData] = useState<unknown[][]>();
@@ -291,9 +297,10 @@ export default function Home() {
           )}
         >
           {uploadedFileName || "Choose File..."}
+          {/* UPDATED: now accepts all types dynamically */}
           <input
             type="file"
-            accept=".csv,.xls,.xlsx,.txt"
+            accept={ACCEPTED_FILE_TYPES}
             onChange={handleFileChange}
             className="hidden"
           />
