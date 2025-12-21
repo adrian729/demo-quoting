@@ -1,75 +1,10 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { cn } from "~/utils/cn";
+import { PaperClipIcon, SendIcon, SparklesIcon, XIcon } from "./icons";
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const DEFAULT_MODEL = "gemini-2.0-flash";
-
-// --- Icons ---
-export const SparklesIcon = ({ className }: { className?: string }) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    className={className}
-    fill="none"
-    viewBox="0 0 24 24"
-    stroke="currentColor"
-  >
-    <path
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth={2}
-      d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"
-    />
-  </svg>
-);
-const SendIcon = ({ className }: { className?: string }) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    className={className}
-    fill="none"
-    viewBox="0 0 24 24"
-    stroke="currentColor"
-  >
-    <path
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth={2}
-      d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
-    />
-  </svg>
-);
-const PaperClipIcon = ({ className }: { className?: string }) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    className={className}
-    fill="none"
-    viewBox="0 0 24 24"
-    stroke="currentColor"
-  >
-    <path
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth={2}
-      d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
-    />
-  </svg>
-);
-const XIcon = ({ className }: { className?: string }) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    className={className}
-    fill="none"
-    viewBox="0 0 24 24"
-    stroke="currentColor"
-  >
-    <path
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth={2}
-      d="M6 18L18 6M6 6l12 12"
-    />
-  </svg>
-);
 
 const readFileAsBase64 = (file: File): Promise<string> => {
   return new Promise((resolve, reject) => {
@@ -332,7 +267,7 @@ const GeminiChat = ({
               <span className="text-sm font-semibold text-emerald-400">
                 Attached:
               </span>
-              <span className="max-w-[120px] truncate text-sm text-emerald-300">
+              <span className="max-w-30 truncate text-sm text-emerald-300">
                 {selectedFile.file.name}
               </span>
             </div>
