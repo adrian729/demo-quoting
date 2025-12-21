@@ -8,17 +8,19 @@ import {
 import ExportActions from "~/components/ExportActions";
 import GeminiChat from "~/components/GeminiChat";
 import {
+  PaperClipIcon,
   RedoIcon,
   ResetIcon,
   SparklesIcon,
   UndoIcon,
+  XIcon,
 } from "~/components/icons";
 import { cn } from "~/utils/cn";
 import {
   isOfTypeSupportedExportType,
   parseFile,
   saveToExcel,
-  SUPPORTED_EXPORT_TYPES, // Make sure this is imported
+  SUPPORTED_EXPORT_TYPES,
   type SupportedExportType,
 } from "~/utils/excelUtils";
 import type { Route } from "./+types/home";
@@ -36,53 +38,53 @@ export function meta({}: Route.MetaArgs) {
 }
 
 const MAX_HISTORY = 10;
-
-// NEW: specific constant for the file input
 const ACCEPTED_FILE_TYPES = SUPPORTED_EXPORT_TYPES.map((t) => `.${t}`).join(
   ",",
 );
 
+// Palette for reference files
+const FILE_COLOR_VARIANTS = [
+  "border-amber-700/50 bg-amber-900/40 text-amber-100 hover:bg-amber-900/60",
+  "border-emerald-700/50 bg-emerald-900/40 text-emerald-100 hover:bg-emerald-900/60",
+  "border-rose-700/50 bg-rose-900/40 text-rose-100 hover:bg-rose-900/60",
+  "border-sky-700/50 bg-sky-900/40 text-sky-100 hover:bg-sky-900/60",
+  "border-violet-700/50 bg-violet-900/40 text-violet-100 hover:bg-violet-900/60",
+  "border-fuchsia-700/50 bg-fuchsia-900/40 text-fuchsia-100 hover:bg-fuchsia-900/60",
+];
+
 export default function Home() {
+  // --- Main Data State ---
   const [fileData, setFileData] = useState<unknown[][]>();
-
-  // 'fileName' is the export name (without extension, editable)
   const [fileName, setFileName] = useState<string>("");
-
-  // 'uploadedFileName' is the original file name (with extension, for upload button)
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
-
   const [error, setError] = useState<string>();
   const [detectedFormat, setDetectedFormat] =
     useState<SupportedExportType>("xlsx");
 
-  // Chat State
-  const [isChatOpen, setIsChatOpen] = useState(false);
+  // --- Extra Files State ---
+  const [extraFiles, setExtraFiles] = useState<File[]>([]);
 
-  // Metadata for highlighting changes
+  // --- Chat & UI State ---
+  const [isChatOpen, setIsChatOpen] = useState(false);
   const [editMetadata, setEditMetadata] = useState<Record<string, EditSource>>(
     {},
   );
-
-  // History State
-  type HistoryState = {
-    data: unknown[][];
-    metadata: Record<string, EditSource>;
-  };
-
-  const [history, setHistory] = useState<HistoryState[]>([]);
-  const [future, setFuture] = useState<HistoryState[]>([]);
-
-  // Original pristine copy for "Reset"
-  const [originalFileData, setOriginalFileData] = useState<unknown[][] | null>(
-    null,
-  );
-
   const [editingCell, setEditingCell] = useState<EditingCell | null>(null);
   const [tempValue, setTempValue] = useState<string>("");
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
 
+  // --- History State ---
+  type HistoryState = {
+    data: unknown[][];
+    metadata: Record<string, EditSource>;
+  };
+  const [history, setHistory] = useState<HistoryState[]>([]);
+  const [future, setFuture] = useState<HistoryState[]>([]);
+  const [originalFileData, setOriginalFileData] = useState<unknown[][] | null>(
+    null,
+  );
+
   // --- Keyboard Shortcuts ---
-  // Ctrl+S / Cmd+S to save
   useEffect(() => {
     const handleGlobalKeyDown = (e: globalThis.KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "s") {
@@ -92,16 +94,13 @@ export default function Home() {
         }
       }
     };
-
     window.addEventListener("keydown", handleGlobalKeyDown);
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
   }, [fileData, fileName, detectedFormat]);
 
   // --- Undo / Redo Logic ---
-
   const commitToHistory = useCallback(() => {
     if (!fileData) return;
-
     setHistory((prev) => {
       const newHistory = [...prev, { data: fileData, metadata: editMetadata }];
       if (newHistory.length > MAX_HISTORY) {
@@ -114,10 +113,8 @@ export default function Home() {
 
   const handleUndo = useCallback(() => {
     if (history.length === 0 || !fileData) return;
-
     const previousState = history[history.length - 1];
     const newHistory = history.slice(0, -1);
-
     setFuture((prev) => [{ data: fileData, metadata: editMetadata }, ...prev]);
     setFileData(previousState.data);
     setEditMetadata(previousState.metadata);
@@ -126,18 +123,15 @@ export default function Home() {
 
   const handleRedo = useCallback(() => {
     if (future.length === 0 || !fileData) return;
-
     const nextState = future[0];
     const newFuture = future.slice(1);
-
     setHistory((prev) => [...prev, { data: fileData, metadata: editMetadata }]);
     setFileData(nextState.data);
     setEditMetadata(nextState.metadata);
     setFuture(newFuture);
   }, [future, fileData, editMetadata]);
 
-  // --- File Handling ---
-
+  // --- Main File Handling ---
   const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.length) return;
     const inputFile = e.target.files[0];
@@ -147,6 +141,7 @@ export default function Home() {
     setEditMetadata({});
     setHistory([]);
     setFuture([]);
+    setExtraFiles([]); // Clear references on new main file load
 
     try {
       const rawData = await parseFile(inputFile);
@@ -160,7 +155,6 @@ export default function Home() {
         lastDotIndex !== -1
           ? inputFile.name.substring(0, lastDotIndex)
           : inputFile.name;
-
       const ext =
         lastDotIndex !== -1
           ? inputFile.name.substring(lastDotIndex + 1).toLowerCase()
@@ -168,9 +162,8 @@ export default function Home() {
 
       setFileData(rawData);
       setOriginalFileData(rawData);
-
-      setUploadedFileName(inputFile.name); // Keep original for upload button
-      setFileName(nameWithoutExt); // Strip extension for export name
+      setUploadedFileName(inputFile.name);
+      setFileName(nameWithoutExt);
 
       if (isOfTypeSupportedExportType(ext)) {
         setDetectedFormat(ext);
@@ -195,8 +188,19 @@ export default function Home() {
     }
   };
 
-  // --- Edit Handling ---
+  // --- Extra Files Handling ---
+  const handleAddExtraFile = (e: ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files?.length) return;
+    const newFiles = Array.from(e.target.files);
+    setExtraFiles((prev) => [...prev, ...newFiles]);
+    e.target.value = "";
+  };
 
+  const removeExtraFile = (indexToRemove: number) => {
+    setExtraFiles((prev) => prev.filter((_, i) => i !== indexToRemove));
+  };
+
+  // --- Edit Handling ---
   const updateDataWithMetadata = (
     newData: unknown[][],
     newMetadata: Record<string, EditSource>,
@@ -208,7 +212,6 @@ export default function Home() {
 
   const handleGeminiUpdate = (newData: unknown[][]) => {
     const newMetadata = { ...editMetadata };
-
     newData.forEach((row, rIndex) => {
       const isNewRow = !fileData || rIndex >= fileData.length;
       row.forEach((cell, cIndex) => {
@@ -222,7 +225,6 @@ export default function Home() {
         }
       });
     });
-
     updateDataWithMetadata(newData, newMetadata);
   };
 
@@ -241,13 +243,10 @@ export default function Home() {
     const newData = [...fileData];
     const newRow = [...(newData[rowIndex] as unknown[])];
 
-    // Always save as string
     if (String(newRow[colIndex]) !== tempValue) {
       commitToHistory();
-
       newRow[colIndex] = tempValue;
       newData[rowIndex] = newRow;
-
       setFileData(newData);
       setEditMetadata((prev) => ({
         ...prev,
@@ -286,102 +285,160 @@ export default function Home() {
   return (
     <div className="flex h-screen w-full flex-col gap-4 bg-slate-900 p-6 text-slate-200">
       {/* 1. Header Section */}
-      <div className="flex shrink-0 items-center gap-4 border-b border-slate-700 pb-4">
-        <span className="font-semibold text-slate-300">Upload File</span>
-        <label
-          className={cn(
-            "flex min-w-35 items-center justify-center px-4 py-2",
-            "border border-slate-600 bg-slate-700 hover:bg-slate-600",
-            "cursor-pointer rounded-lg transition-colors",
-            "text-sm font-semibold text-white",
-          )}
-        >
-          {uploadedFileName || "Choose File..."}
-          {/* UPDATED: now accepts all types dynamically */}
-          <input
-            type="file"
-            accept={ACCEPTED_FILE_TYPES}
-            onChange={handleFileChange}
-            className="hidden"
-          />
-        </label>
-
-        {/* Undo / Redo Buttons */}
-        {fileData && (
-          <div className="mx-2 flex items-center gap-1 border-r border-l border-slate-700 px-4">
-            <button
-              onClick={handleUndo}
-              disabled={!canUndo}
-              className={cn(
-                "rounded p-2 transition-colors hover:bg-slate-800",
-                !canUndo
-                  ? "cursor-not-allowed opacity-30"
-                  : "cursor-pointer text-slate-300 hover:text-white",
-              )}
-              title="Undo"
-            >
-              <UndoIcon className="h-4 w-4" />
-            </button>
-            <button
-              onClick={handleRedo}
-              disabled={!canRedo}
-              className={cn(
-                "rounded p-2 transition-colors hover:bg-slate-800",
-                !canRedo
-                  ? "cursor-not-allowed opacity-30"
-                  : "cursor-pointer text-slate-300 hover:text-white",
-              )}
-              title="Redo"
-            >
-              <RedoIcon className="h-4 w-4" />
-            </button>
-          </div>
-        )}
-
-        {/* Reset Button */}
-        {fileData && (
-          <button
-            onClick={() => setIsResetDialogOpen(true)}
-            disabled={!hasEdits}
+      <div className="flex shrink-0 flex-col gap-4 border-b border-slate-700 pb-4">
+        {/* Top Row: Main Actions */}
+        <div className="flex items-center gap-4">
+          <span className="font-semibold text-slate-300">File</span>
+          <label
             className={cn(
-              "flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition-colors",
-              hasEdits
-                ? "cursor-pointer border-red-900/50 bg-red-900/20 text-red-400 hover:bg-red-900/40 hover:text-red-300"
-                : "cursor-not-allowed border-slate-700 bg-slate-800 text-slate-500 opacity-50",
+              "flex min-w-35 items-center justify-center px-4 py-2",
+              "border border-slate-600 bg-slate-700 hover:bg-slate-600",
+              "cursor-pointer rounded-lg transition-colors",
+              "text-sm font-semibold text-white",
             )}
-            title="Reset to original file data"
           >
-            <ResetIcon className="h-4 w-4" />
-            Reset
-          </button>
-        )}
+            {uploadedFileName || "Open Spreadsheet..."}
+            <input
+              type="file"
+              accept={ACCEPTED_FILE_TYPES}
+              onChange={handleFileChange}
+              className="hidden"
+            />
+          </label>
 
-        {/* Legend */}
-        {hasEdits && (
-          <div className="ml-2 flex items-center gap-3 text-xs">
-            <div className="flex items-center gap-1">
-              <div className="h-3 w-3 rounded-sm bg-blue-900/60 ring-1 ring-blue-500"></div>
-              <span className="text-blue-200">You</span>
-            </div>
-            <div className="flex items-center gap-1">
-              <div className="h-3 w-3 rounded-sm bg-purple-900/60 ring-1 ring-purple-500"></div>
-              <span className="text-purple-200">Gemini</span>
-            </div>
-          </div>
-        )}
+          {/* "Add Reference" Button - Only visible if a file is loaded */}
+          {fileData && (
+            <label
+              className={cn(
+                "flex items-center gap-2 px-3 py-2",
+                "border border-slate-700 bg-slate-800 hover:bg-slate-700",
+                "cursor-pointer rounded-lg transition-colors",
+                "text-sm font-medium text-slate-300 hover:text-white",
+              )}
+              title="Upload other files for reference (PDF, Images, etc)"
+            >
+              <PaperClipIcon className="h-4 w-4" />
+              Add Reference
+              <input
+                type="file"
+                multiple
+                onChange={handleAddExtraFile}
+                className="hidden"
+              />
+            </label>
+          )}
 
-        {!!error && (
-          <div className="ml-2 font-medium whitespace-nowrap text-red-400">
-            {error}
+          {/* Undo / Redo Buttons */}
+          {fileData && (
+            <div className="mx-2 flex items-center gap-1 border-r border-l border-slate-700 px-4">
+              <button
+                onClick={handleUndo}
+                disabled={!canUndo}
+                className={cn(
+                  "rounded p-2 transition-colors hover:bg-slate-800",
+                  !canUndo
+                    ? "cursor-not-allowed opacity-30"
+                    : "cursor-pointer text-slate-300 hover:text-white",
+                )}
+                title="Undo"
+              >
+                <UndoIcon className="h-4 w-4" />
+              </button>
+              <button
+                onClick={handleRedo}
+                disabled={!canRedo}
+                className={cn(
+                  "rounded p-2 transition-colors hover:bg-slate-800",
+                  !canRedo
+                    ? "cursor-not-allowed opacity-30"
+                    : "cursor-pointer text-slate-300 hover:text-white",
+                )}
+                title="Redo"
+              >
+                <RedoIcon className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+
+          {/* Reset Button */}
+          {fileData && (
+            <button
+              onClick={() => setIsResetDialogOpen(true)}
+              disabled={!hasEdits}
+              className={cn(
+                "flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition-colors",
+                hasEdits
+                  ? "cursor-pointer border-red-900/50 bg-red-900/20 text-red-400 hover:bg-red-900/40 hover:text-red-300"
+                  : "cursor-not-allowed border-slate-700 bg-slate-800 text-slate-500 opacity-50",
+              )}
+              title="Reset to original file data"
+            >
+              <ResetIcon className="h-4 w-4" />
+              Reset
+            </button>
+          )}
+
+          {/* Legend */}
+          {hasEdits && (
+            <div className="ml-2 flex items-center gap-3 text-xs">
+              <div className="flex items-center gap-1">
+                <div className="h-3 w-3 rounded-sm bg-blue-900/60 ring-1 ring-blue-500"></div>
+                <span className="text-blue-200">You</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <div className="h-3 w-3 rounded-sm bg-purple-900/60 ring-1 ring-purple-500"></div>
+                <span className="text-purple-200">Gemini</span>
+              </div>
+            </div>
+          )}
+
+          {!!error && (
+            <div className="ml-2 font-medium whitespace-nowrap text-red-400">
+              {error}
+            </div>
+          )}
+          {fileData && (
+            <ExportActions
+              data={fileData}
+              fileName={fileName || "edited_data"}
+              onFileNameChange={(name) => setFileName(name)}
+              initialFormat={detectedFormat}
+            />
+          )}
+        </div>
+
+        {/* Bottom Row: Reference Files List (Dynamic Colors) */}
+        {extraFiles.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg bg-slate-800/50 px-3 py-2">
+            <span className="mr-2 text-xs font-semibold text-slate-500 uppercase">
+              References:
+            </span>
+            {extraFiles.map((file, idx) => {
+              // Cycle through the color palette based on index
+              const colorClass =
+                FILE_COLOR_VARIANTS[idx % FILE_COLOR_VARIANTS.length];
+
+              return (
+                <div
+                  key={idx}
+                  className={cn(
+                    "flex items-center gap-2 rounded border px-2 py-1 text-xs shadow-sm transition-colors",
+                    colorClass,
+                  )}
+                >
+                  <span className="max-w-[150px] truncate" title={file.name}>
+                    {file.name}
+                  </span>
+                  <button
+                    onClick={() => removeExtraFile(idx)}
+                    className="cursor-pointer rounded-full p-0.5 opacity-60 hover:bg-black/20 hover:text-white hover:opacity-100"
+                  >
+                    <XIcon className="h-3 w-3" />
+                  </button>
+                </div>
+              );
+            })}
           </div>
-        )}
-        {fileData && (
-          <ExportActions
-            data={fileData}
-            fileName={fileName || "edited_data"}
-            onFileNameChange={(name) => setFileName(name)}
-            initialFormat={detectedFormat}
-          />
         )}
       </div>
 
@@ -526,7 +583,7 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Floating Chat Button (When closed) */}
+      {/* Floating Chat Button */}
       {!isChatOpen && (
         <button
           onClick={() => setIsChatOpen(true)}
@@ -536,7 +593,7 @@ export default function Home() {
         </button>
       )}
 
-      {/* --- Reset Confirmation Dialog --- */}
+      {/* Reset Dialog */}
       {isResetDialogOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
           <div className="w-full max-w-sm rounded-lg border border-slate-700 bg-slate-800 p-6 shadow-2xl">
