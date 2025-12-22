@@ -3,7 +3,7 @@ import { generateContentWithFallback } from "./geminiApi";
 export type ExtractionCitation =
   | { type: "document"; page: string | number; quote: string }
   | { type: "spreadsheet"; location: string; reasoning: string }
-  | { type: "api"; endpoint: string; reasoning: string };
+  | { type: "api"; endpoint: string; reasoning: string; url?: string }; // <--- Added url
 
 export type ExtractedRowWithSource = {
   data: string[];

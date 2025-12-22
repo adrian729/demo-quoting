@@ -6,7 +6,7 @@ export type QuotedRow = {
   netPricePerUnit: string | number;
   estimatedDelivery: string;
   packQuantity: string | number;
-  sourceUrl: string; // <--- ADDED: Explicit URL field
+  sourceUrl: string;
   reasoning: string;
 };
 
@@ -34,7 +34,7 @@ export async function quoteProducts(
     ROWS: ${JSON.stringify(itemsToQuote)}
 
     SEARCH STRATEGY:
-    1. **Search Query**: For each item, search for "Conrad [Part Number] [Manufacturer]".
+    1. **Search Query**: For each item, search for "Conrad [Part Number] [Manufacturer]" or "buy [Part Number] [Manufacturer] price".
     2. **Formatting**: If a search fails, try different formats (e.g. "8806.000" instead of "8806000").
     3. **Verify**: Ensure the product page matches the description.
 
@@ -43,11 +43,15 @@ export async function quoteProducts(
     2. **Pack Size**: Check if it's a pack (e.g. "Pack of 10").
     3. **Delivery**: Look for "Sofort verfügbar" (1-3 days) or specific dates.
 
+    CRITICAL URL RULES (VIOLATION = FAILURE):
+    - **sourceUrl**: You MUST use the EXACT URL returned by the Google Search tool. 
+    - **DO NOT GUESS URLs**: Do not construct URLs like "shop.com/product/123" if you didn't click/see them. 
+    - If the search tool does not provide a direct link to a product page, leave sourceUrl empty.
+    - **Consistency**: The 'sourceUrl' domain must match the supplier mentioned in 'reasoning'.
+
     OUTPUT REQUIREMENTS:
     - You MUST return a JSON Array.
     - You MUST return an object for EVERY single input row.
-    - **sourceUrl**: You MUST provide the direct URL to the product page found.
-    - If price is not visible in snippet but product is found, set price to "Check Site" and return the URL.
     - If a product is NOT found, set values to "N/A", sourceUrl to "", and reasoning to "Product not found".
 
     OUTPUT FORMAT (JSON ONLY):
@@ -70,12 +74,11 @@ export async function quoteProducts(
     const { text: responseText } = await generateContentWithFallback(
       startModel,
       availableModels,
-      "You are a procurement agent with access to Google Search. You always return the source URL.",
+      "You are a procurement agent with access to Google Search. You never invent URLs.",
       contents,
       undefined,
-      { temperature: 0.1 },
-      // The correct tool definition for Gemini 2.0
-      // @ts-ignore
+      { temperature: 0.0 }, // Lowered to 0.0 to reduce hallucinations
+      // Pass the tool definition compatible with @google/genai
       [{ googleSearch: {} }],
     );
 

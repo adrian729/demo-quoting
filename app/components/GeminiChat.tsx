@@ -1,4 +1,4 @@
-import { type Content } from "@google/generative-ai";
+import { type Content } from "@google/genai";
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import {
   PaperClipIcon,
@@ -127,7 +127,7 @@ const GeminiChat = ({
     try {
       let systemInstruction = `You are an AI assistant integrated into a spreadsheet editor.`;
 
-      // --- FIXED: Explicitly separate Headers from Data ---
+      // --- Explicitly separate Headers from Data ---
       if (data && data.length > 0) {
         systemInstruction += `\n\nCURRENT SPREADSHEET CONTENT:`;
         systemInstruction += `\nHEADINGS (Row 0): ${JSON.stringify(data[0])}`;
@@ -183,7 +183,7 @@ const GeminiChat = ({
       const historyContents: Content[] = messages
         .filter((msg) => msg.role !== "system")
         .map((msg) => ({
-          role: msg.role as "user" | "model",
+          role: msg.role === "model" ? "model" : "user",
           parts: [{ text: msg.text }],
         }));
 
@@ -204,7 +204,7 @@ const GeminiChat = ({
       });
       if (userMessage.text) currentParts.push({ text: userMessage.text });
 
-      const fullContents = [
+      const fullContents: Content[] = [
         ...historyContents,
         { role: "user" as const, parts: currentParts },
       ];
@@ -240,7 +240,7 @@ const GeminiChat = ({
 
           // Handle object format with rows & citations
           if (parsedObj.rows && Array.isArray(parsedObj.rows) && onDataUpdate) {
-            // --- FIXED: DEEP COPY & MERGE LOGIC ---
+            // DEEP COPY & MERGE LOGIC
             // Create a working copy so we don't delete rows the AI didn't mention
             const workingData = data
               ? data.map((row) => (Array.isArray(row) ? [...row] : []))

@@ -1,15 +1,21 @@
 import {
-  GoogleGenerativeAI,
+  GoogleGenAI,
   type Content,
-  type GenerationConfig,
+  type GenerateContentConfig,
   type Tool,
-} from "@google/generative-ai";
+} from "@google/genai";
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 export const DEFAULT_MODEL = "gemini-2.0-flash";
 
+// Initialize the new client
+const ai = new GoogleGenAI({ apiKey: API_KEY });
+
 export async function fetchAvailableModels(): Promise<string[]> {
   try {
+    // We can stick to the fetch implementation to ensure we get the exact list we expect,
+    // or use ai.models.list() if preferred. For safety during migration, keeping the fetch
+    // is reliable as it bypasses SDK method signature changes.
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models?key=${API_KEY}`,
     );
@@ -38,12 +44,9 @@ export async function generateContentWithFallback(
   systemInstruction: string,
   contents: Content[],
   onRetry?: (failedModel: string, nextModel: string) => void,
-  config: GenerationConfig = {},
-  // NEW: Accept tools (like Google Search)
+  config: GenerateContentConfig = {},
   tools: Tool[] = [],
 ): Promise<{ text: string; finalModel: string }> {
-  const genAI = new GoogleGenerativeAI(API_KEY);
-
   const getNextModel = (current: string, excluded: string[]) => {
     const idx = availableModels.indexOf(current);
     const next = availableModels
@@ -57,16 +60,19 @@ export async function generateContentWithFallback(
     failedList: string[],
   ): Promise<{ text: string; finalModel: string }> => {
     try {
-      const model = genAI.getGenerativeModel({
+      // The new SDK call structure
+      const result = await ai.models.generateContent({
         model: modelName,
-        systemInstruction,
-        generationConfig: config,
-        // PASS TOOLS HERE
-        tools: tools,
+        contents: contents,
+        config: {
+          ...config,
+          systemInstruction: systemInstruction,
+          tools: tools,
+        },
       });
 
-      const result = await model.generateContent({ contents });
-      const text = result.response.text();
+      // In @google/genai, .text is a getter property, not a function
+      const text = result.text || "";
       return { text, finalModel: modelName };
     } catch (err) {
       console.warn(`Model ${modelName} failed:`, err);

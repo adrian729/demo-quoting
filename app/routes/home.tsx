@@ -84,6 +84,18 @@ const FILE_CELL_VARIANTS = [
   "bg-fuchsia-900/40 text-fuchsia-100 ring-1 ring-inset ring-fuchsia-500/50",
 ];
 
+// Helper to get domain from URL for cleaner display
+const getDomain = (url?: string) => {
+  if (!url) return "AI Search";
+  try {
+    // Handle cases where URL might be just a domain or incomplete
+    const urlObj = new URL(url.startsWith("http") ? url : `https://${url}`);
+    return urlObj.hostname.replace(/^www\./, "");
+  } catch (e) {
+    return "External Source";
+  }
+};
+
 export default function Home() {
   // --- Main Data State ---
   const [fileData, setFileData] = useState<unknown[][]>();
@@ -115,6 +127,8 @@ export default function Home() {
 
   // Quoting State
   const [isQuoting, setIsQuoting] = useState(false);
+  // Track quoting status for individual rows
+  const [quotingRowIndices, setQuotingRowIndices] = useState<number[]>([]);
 
   // --- UI State ---
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -390,13 +404,12 @@ export default function Home() {
     }
   };
 
-  // --- Auto Quoting Logic ---
+  // --- Auto Quoting Logic (Batch) ---
   const handleAutoQuote = async () => {
     if (!fileData || fileData.length === 0) return;
     setIsQuoting(true);
     setMainFileError(undefined);
 
-    // Save state BEFORE adding columns, in case we need to revert or if user cancels (implied)
     commitToHistory();
 
     try {
@@ -440,7 +453,6 @@ export default function Home() {
       if (quotes && quotes.length > 0) {
         // 3. Merge Results
         quotes.forEach((quote) => {
-          // quote.rowId is 1-based index
           const rowIndex = quote.rowId;
 
           if (rowIndex < updatedData.length) {
@@ -454,40 +466,130 @@ export default function Home() {
             updatedData[rowIndex] = row;
 
             // Update Metadata (Coloring)
-            const quoteSourceId = "conrad-quoting";
             updatedMeta[`${rowIndex}-${colIndices["Net Price"]}`] = "ai";
             updatedMeta[`${rowIndex}-${colIndices["Price/Unit"]}`] = "ai";
             updatedMeta[`${rowIndex}-${colIndices["Est. Delivery"]}`] = "ai";
 
-            // Update Source Citation
+            // Update Source Citation with proper dynamic URL and Domain
+            const domain = getDomain(quote.sourceUrl);
             updatedSources[rowIndex] = {
-              fileId: quoteSourceId,
-              fileName: "Conrad.de Quoting AI",
+              fileId: "conrad-quoting",
+              fileName: "AI Quoting",
               citation: {
                 type: "api",
-                endpoint: "Conrad.de Procurement",
+                endpoint: domain, // Shows "octo24.com" etc.
                 reasoning: quote.reasoning,
+                url: quote.sourceUrl, // Passes the full URL to the modal
               },
             };
           }
         });
 
-        // ONLY update state if we actually got results
         setFileData(updatedData);
         setEditMetadata(updatedMeta);
         setRowSources(updatedSources);
       } else {
-        // Handle no results
         setMainFileError(
           "Quoting failed or found no results. Data not modified.",
         );
-        // We do NOT update fileData, so the empty columns are not permanently added
       }
     } catch (e) {
       console.error("Auto Quoting error", e);
       setMainFileError("Quoting process failed.");
     } finally {
       setIsQuoting(false);
+    }
+  };
+
+  // --- Single Row Quoting Logic ---
+  const handleSingleRowQuote = async (rowIndex: number) => {
+    if (!fileData) return;
+
+    setQuotingRowIndices((prev) => [...prev, rowIndex]);
+    commitToHistory();
+
+    try {
+      let currentData = [...fileData];
+      let currentHeaders = [...(currentData[0] as string[])];
+
+      const requiredCols = ["Net Price", "Price/Unit", "Est. Delivery"];
+      const colIndices: Record<string, number> = {};
+      let columnsAdded = false;
+
+      requiredCols.forEach((colName) => {
+        let idx = currentHeaders.findIndex((h) =>
+          h?.toString().toLowerCase().includes(colName.toLowerCase()),
+        );
+        if (idx === -1) {
+          idx = currentHeaders.length;
+          currentHeaders.push(colName);
+          columnsAdded = true;
+        }
+        colIndices[colName] = idx;
+      });
+
+      if (columnsAdded) {
+        currentData = currentData.map((row, i) => {
+          if (i === 0) return currentHeaders;
+          const newRow = [...row];
+          while (newRow.length < currentHeaders.length) {
+            newRow.push("");
+          }
+          return newRow;
+        });
+        setFileData(currentData);
+      }
+
+      const rowToQuote = currentData[rowIndex];
+      const quotes = await quoteProducts(
+        [rowToQuote],
+        currentHeaders,
+        currentModel,
+        availableModels,
+      );
+
+      if (quotes && quotes.length > 0) {
+        const quote = quotes[0];
+
+        setFileData((prevData) => {
+          if (!prevData) return prevData;
+          const newData = [...prevData];
+          const row = [...(newData[rowIndex] as unknown[])];
+          while (row.length < currentHeaders.length) row.push("");
+
+          row[colIndices["Net Price"]] = quote.totalNetPrice;
+          row[colIndices["Price/Unit"]] = quote.netPricePerUnit;
+          row[colIndices["Est. Delivery"]] = quote.estimatedDelivery;
+          newData[rowIndex] = row;
+          return newData;
+        });
+
+        setEditMetadata((prev) => ({
+          ...prev,
+          [`${rowIndex}-${colIndices["Net Price"]}`]: "ai",
+          [`${rowIndex}-${colIndices["Price/Unit"]}`]: "ai",
+          [`${rowIndex}-${colIndices["Est. Delivery"]}`]: "ai",
+        }));
+
+        const domain = getDomain(quote.sourceUrl);
+        setRowSources((prev) => ({
+          ...prev,
+          [rowIndex]: {
+            fileId: "conrad-quoting-single",
+            fileName: "AI Quoting",
+            citation: {
+              type: "api",
+              endpoint: domain,
+              reasoning: quote.reasoning,
+              url: quote.sourceUrl,
+            },
+          },
+        }));
+      }
+    } catch (e) {
+      console.error("Single row quote error:", e);
+    } finally {
+      setQuotingRowIndices((prev) => prev.filter((id) => id !== rowIndex));
     }
   };
 
@@ -507,7 +609,6 @@ export default function Home() {
     setColorCounter((prev) => prev + newFilesRaw.length);
     commitToHistory();
 
-    // Accumulate changes for batch uploads
     let workingData = [...fileData];
     let workingMeta = { ...editMetadata };
     let workingSources = { ...rowSources };
@@ -592,7 +693,6 @@ export default function Home() {
       });
     });
 
-    // Merge chat sources if provided
     let updatedSources = { ...rowSources };
     if (newSources) {
       updatedSources = { ...updatedSources, ...newSources };
@@ -895,7 +995,7 @@ export default function Home() {
                   <thead className="sticky top-0 z-10 bg-slate-900 text-xs font-bold text-slate-200 shadow-sm">
                     <tr>
                       {/* Status Column */}
-                      <th className="sticky left-0 z-20 w-10 border-b border-slate-700 bg-slate-900 px-3 py-3 text-center">
+                      <th className="sticky left-0 z-20 w-20 border-b border-slate-700 bg-slate-900 px-3 py-3 text-center">
                         <span className="sr-only">Source</span>
                       </th>
                       {/* Headers */}
@@ -939,19 +1039,39 @@ export default function Home() {
                     {bodyRows.map((row, rIndex) => {
                       const rowIndex = rIndex + 1;
                       const rowSource = rowSources[rowIndex];
+                      const isRowQuoting = quotingRowIndices.includes(rowIndex);
                       return (
                         <tr key={rowIndex}>
                           {/* Status Cell */}
                           <td className="sticky left-0 z-10 border-b border-slate-700 bg-slate-900/95 px-3 py-4 text-center">
-                            {rowSource && (
+                            <div className="flex items-center justify-center gap-1">
+                              {rowSource && (
+                                <button
+                                  onClick={() => setViewingSource(rowSource)}
+                                  className="cursor-pointer text-slate-500 transition-colors hover:text-emerald-400"
+                                  title="View Source Citation"
+                                >
+                                  <BookIcon className="h-4 w-4" />
+                                </button>
+                              )}
                               <button
-                                onClick={() => setViewingSource(rowSource)}
-                                className="cursor-pointer text-slate-500 transition-colors hover:text-emerald-400"
-                                title="View Source Citation"
+                                onClick={() => handleSingleRowQuote(rowIndex)}
+                                disabled={isRowQuoting}
+                                className={cn(
+                                  "cursor-pointer rounded p-1 transition-colors hover:bg-slate-700",
+                                  isRowQuoting
+                                    ? "cursor-not-allowed opacity-50"
+                                    : "text-slate-500 hover:text-emerald-400",
+                                )}
+                                title="Quote this row"
                               >
-                                <BookIcon className="h-4 w-4" />
+                                {isRowQuoting ? (
+                                  <span className="block h-4 w-4 animate-spin rounded-full border-2 border-emerald-500/50 border-t-emerald-400" />
+                                ) : (
+                                  <BanknotesIcon className="h-4 w-4" />
+                                )}
                               </button>
-                            )}
+                            </div>
                           </td>
                           {/* Data Cells */}
                           {[...row].map((cell, colIndex) => (
@@ -1088,6 +1208,24 @@ export default function Home() {
                       : "Unknown")}
                 </span>
               </div>
+
+              {/* Field 1.5: URL (New) */}
+              {viewingSource.citation.type === "api" &&
+                viewingSource.citation.url && (
+                  <div className="rounded border border-slate-700 bg-slate-900 p-3">
+                    <span className="mb-1 block text-xs tracking-wider text-slate-500 uppercase">
+                      Source Link
+                    </span>
+                    <a
+                      href={viewingSource.citation.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="break-all text-blue-400 underline hover:text-blue-300"
+                    >
+                      {viewingSource.citation.url}
+                    </a>
+                  </div>
+                )}
 
               {/* Field 2: Location (Conditional) */}
               {viewingSource.citation.type !== "api" && (
