@@ -8,6 +8,7 @@ import {
 import ExportActions from "~/components/ExportActions";
 import GeminiChat from "~/components/GeminiChat";
 import {
+  MagicIcon,
   PaperClipIcon,
   RedoIcon,
   ResetIcon,
@@ -33,6 +34,13 @@ import type { Route } from "./+types/home";
 
 type EditingCell = { rowIndex: number; colIndex: number };
 type EditSource = "user" | "ai" | string;
+
+// Stable Reference File Object
+type ReferenceFile = {
+  id: string;
+  file: File;
+  colorIndex: number;
+};
 
 export function meta({}: Route.MetaArgs) {
   return [
@@ -68,15 +76,22 @@ export default function Home() {
   const [fileData, setFileData] = useState<unknown[][]>();
   const [fileName, setFileName] = useState<string>("");
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
-  const [error, setError] = useState<string>();
+
+  // Renamed to clarify this is for the MAIN file load error
+  const [mainFileError, setMainFileError] = useState<string>();
+
   const [detectedFormat, setDetectedFormat] =
     useState<SupportedExportType>("xlsx");
 
-  const [extraFiles, setExtraFiles] = useState<File[]>([]);
-  // Used to show loading spinner on specific chips
-  const [extractingFileIndices, setExtractingFileIndices] = useState<number[]>(
-    [],
-  );
+  const [extraFiles, setExtraFiles] = useState<ReferenceFile[]>([]);
+  const [extractingFileIds, setExtractingFileIds] = useState<string[]>([]);
+
+  // NEW: Track errors per file ID
+  const [extractionErrors, setExtractionErrors] = useState<
+    Record<string, string>
+  >({});
+
+  const [colorCounter, setColorCounter] = useState(0);
 
   const { availableModels, currentModel, setCurrentModel } = useGemini();
   const [fallbackWarning, setFallbackWarning] = useState<string | null>(null);
@@ -148,17 +163,19 @@ export default function Home() {
   const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.length) return;
     const inputFile = e.target.files[0];
-    setError(undefined);
+    setMainFileError(undefined);
     setEditingCell(null);
     setEditMetadata({});
     setHistory([]);
     setFuture([]);
     setExtraFiles([]);
+    setExtractionErrors({});
+    setColorCounter(0);
     setFallbackWarning(null);
     try {
       const rawData = await parseFile(inputFile);
       if (rawData.length === 0) {
-        setError("The file is empty or has no valid data");
+        setMainFileError("The file is empty or has no valid data");
         return;
       }
       const lastDotIndex = inputFile.name.lastIndexOf(".");
@@ -178,7 +195,7 @@ export default function Home() {
       else setDetectedFormat("xlsx");
     } catch (err) {
       console.error("Error processing file:", err);
-      setError("Failed to parse the file.");
+      setMainFileError("Failed to parse the file.");
     }
     e.target.value = "";
   };
@@ -190,33 +207,88 @@ export default function Home() {
       setEditMetadata({});
       setIsResetDialogOpen(false);
       setFallbackWarning(null);
+      setExtractionErrors({});
     }
   };
 
+  // --- HELPER: Remove Data for a Specific File ID ---
+  // Returns cleaned data and metadata without setting state directly
+  // This allows us to "simulate" removal before adding new data
+  const removeDataForFileId = (
+    idToRemove: string,
+    currentData: unknown[][],
+    currentMeta: Record<string, EditSource>,
+  ) => {
+    const rowsKeepIndices: number[] = [0]; // Always keep headers
+
+    for (let r = 1; r < currentData.length; r++) {
+      let isFromThisFile = false;
+      const row = currentData[r] as unknown[];
+      // Check metadata of first few cells (usually scanning one or two cols is enough)
+      for (let c = 0; c < row.length; c++) {
+        const meta = currentMeta[`${r}-${c}`];
+        if (meta === `extraction-${idToRemove}`) {
+          isFromThisFile = true;
+          break;
+        }
+      }
+      if (!isFromThisFile) {
+        rowsKeepIndices.push(r);
+      }
+    }
+
+    const newData = rowsKeepIndices.map((idx) => currentData[idx]);
+    const newMetadata: Record<string, EditSource> = {};
+
+    rowsKeepIndices.forEach((oldRowIdx, newRowIdx) => {
+      const row = currentData[oldRowIdx] as unknown[];
+      row.forEach((_, colIdx) => {
+        const oldMeta = currentMeta[`${oldRowIdx}-${colIdx}`];
+        if (oldMeta) {
+          // Keep metadata for rows we preserved
+          newMetadata[`${newRowIdx}-${colIdx}`] = oldMeta;
+        }
+      });
+    });
+
+    return { newData, newMetadata };
+  };
+
   // --- CORE EXTRACTION FUNCTION ---
-  // Factored out so it can be called by both 'Add' and 'Retry'
+  // Now handles cleaning old data first (Refinement Logic)
   const runExtraction = async (
-    file: File,
-    fileIndex: number,
+    refFile: ReferenceFile,
     currentData: unknown[][],
     currentMeta: Record<string, EditSource>,
   ) => {
     if (!currentData || currentData.length === 0) return null;
 
-    setExtractingFileIndices((prev) => [...prev, fileIndex]);
-    setError(undefined);
+    setExtractingFileIds((prev) => [...prev, refFile.id]);
 
-    const headers = currentData[0];
+    // Clear previous error for this file so UI resets
+    setExtractionErrors((prev) => {
+      const next = { ...prev };
+      delete next[refFile.id];
+      return next;
+    });
+
+    // 1. CLEAN: Remove existing data for this file ID first.
+    // This ensures we don't duplicate rows if the user clicks "Retry".
+    const { newData: cleanedData, newMetadata: cleanedMeta } =
+      removeDataForFileId(refFile.id, currentData, currentMeta);
+
+    const headers = cleanedData[0];
     const attemptedModel = currentModel;
 
+    // 2. EXTRACT
     const result = await extractDataFromReference(
-      file,
+      refFile.file,
       headers,
       attemptedModel,
       availableModels,
     );
 
-    setExtractingFileIndices((prev) => prev.filter((i) => i !== fileIndex));
+    setExtractingFileIds((prev) => prev.filter((id) => id !== refFile.id));
 
     if (result && result.data.length > 0) {
       if (result.finalModel !== attemptedModel) {
@@ -226,57 +298,64 @@ export default function Home() {
         );
       }
 
-      const startRowIndex = currentData.length;
-      const updatedData = [...currentData, ...result.data];
-      const newMetadata = { ...currentMeta };
+      // 3. MERGE
+      const startRowIndex = cleanedData.length;
+      const updatedData = [...cleanedData, ...result.data];
+      const newMetadata = { ...cleanedMeta };
 
       result.data.forEach((row, rIdx) => {
         row.forEach((_, cIdx) => {
           newMetadata[`${startRowIndex + rIdx}-${cIdx}`] =
-            `extraction-${fileIndex}`;
+            `extraction-${refFile.id}`;
         });
       });
 
       return { updatedData, newMetadata };
     } else {
-      setError(`Could not extract valid data from ${file.name}`);
-      return null;
+      // 4. FAILURE CASE
+      // We set the error state for the chip icon/tooltip.
+      // IMPORTANT: We return the CLEANED data. This means if extraction fails
+      // on a retry, the old (potentially wrong) data is removed, leaving a clean slate.
+      setExtractionErrors((prev) => ({
+        ...prev,
+        [refFile.id]: `Could not extract valid data from ${refFile.file.name}. The AI might not have found tabular data matching your headers.`,
+      }));
+
+      return { updatedData: cleanedData, newMetadata: cleanedMeta };
     }
   };
 
-  // --- ADD FILE + AUTO EXTRACT ---
+  // --- ADD FILE + AUTO EXTRACT (BATCH SUPPORT) ---
   const handleAddExtraFile = async (e: ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.length) return;
     if (!fileData) return;
 
-    const newFiles = Array.from(e.target.files);
-    const startIdx = extraFiles.length;
+    const newFilesRaw = Array.from(e.target.files);
 
-    // 1. Add to file list immediately
-    setExtraFiles((prev) => [...prev, ...newFiles]);
+    // 1. Create ReferenceFile objects
+    const newRefFiles: ReferenceFile[] = newFilesRaw.map((file, i) => ({
+      id: crypto.randomUUID(),
+      file,
+      colorIndex: (colorCounter + i) % FILE_CHIP_VARIANTS.length,
+    }));
 
-    // 2. Commit current state before modifying
+    setExtraFiles((prev) => [...prev, ...newRefFiles]);
+    setColorCounter((prev) => prev + newFilesRaw.length);
     commitToHistory();
 
+    // 2. Accumulate changes sequentially
+    // We must use local variables to chain the updates, otherwise
+    // the second file will try to update based on stale 'fileData'.
     let workingData = [...fileData];
     let workingMeta = { ...editMetadata };
 
-    // 3. Process each new file sequentially
-    for (let i = 0; i < newFiles.length; i++) {
-      const file = newFiles[i];
-      const actualIndex = startIdx + i;
-
-      const result = await runExtraction(
-        file,
-        actualIndex,
-        workingData,
-        workingMeta,
-      );
+    for (const refFile of newRefFiles) {
+      const result = await runExtraction(refFile, workingData, workingMeta);
 
       if (result) {
         workingData = result.updatedData;
         workingMeta = result.newMetadata;
-        // Update state progressively so user sees rows appearing
+        // Update state progressively so user sees rows popping in
         setFileData(workingData);
         setEditMetadata(workingMeta);
       }
@@ -285,77 +364,42 @@ export default function Home() {
     e.target.value = "";
   };
 
-  // --- REMOVE FILE + DELETE ROWS ---
-  const removeExtraFile = (indexToRemove: number) => {
+  // --- REMOVE FILE ---
+  const removeExtraFile = (idToRemove: string) => {
     if (!fileData) return;
     commitToHistory();
 
-    // 1. Remove file from UI list
-    setExtraFiles((prev) => prev.filter((_, i) => i !== indexToRemove));
+    // 1. Remove from UI
+    setExtraFiles((prev) => prev.filter((f) => f.id !== idToRemove));
 
-    // 2. Filter out rows belonging to this file
-    // We identify rows by checking if ANY cell in that row has the metadata key
-    const rowsKeepIndices: number[] = [];
-    // Always keep header (row 0)
-    rowsKeepIndices.push(0);
-
-    for (let r = 1; r < fileData.length; r++) {
-      // Check first cell metadata (or any cell in the row)
-      // Optimization: usually checking col 0 or 1 is enough, but let's be safe
-      const rowKey = `${r}-0`; // Using first column as proxy
-      // Better approach: Check if row was generated by this index.
-      // Since our metadata key format is `row-col`, we need to scan the row's metadata.
-      let isFromRemovedFile = false;
-
-      // Check a few columns to see if they are tagged with 'extraction-INDEX'
-      // We iterate columns of the row
-      const row = fileData[r] as unknown[];
-      for (let c = 0; c < row.length; c++) {
-        const meta = editMetadata[`${r}-${c}`];
-        if (meta === `extraction-${indexToRemove}`) {
-          isFromRemovedFile = true;
-          break;
-        }
-      }
-
-      if (!isFromRemovedFile) {
-        rowsKeepIndices.push(r);
-      }
-    }
-
-    // Construct new Data
-    const newData = rowsKeepIndices.map((idx) => fileData[idx]);
-
-    // 3. Rebuild Metadata
-    // We need to shift row indices AND shift extraction-IDs for files coming AFTER the removed one.
-    const newMetadata: Record<string, EditSource> = {};
-
-    rowsKeepIndices.forEach((oldRowIdx, newRowIdx) => {
-      const row = fileData[oldRowIdx] as unknown[];
-      row.forEach((_, colIdx) => {
-        const oldMeta = editMetadata[`${oldRowIdx}-${colIdx}`];
-        if (oldMeta) {
-          let newMetaValue = oldMeta;
-
-          // If it's an extraction source, check if we need to decrement the ID
-          if (
-            typeof oldMeta === "string" &&
-            oldMeta.startsWith("extraction-")
-          ) {
-            const fileId = parseInt(oldMeta.split("-")[1], 10);
-            if (fileId > indexToRemove) {
-              // Shift ID down (e.g. extraction-2 becomes extraction-1)
-              newMetaValue = `extraction-${fileId - 1}`;
-            }
-          }
-
-          newMetadata[`${newRowIdx}-${colIdx}`] = newMetaValue;
-        }
-      });
+    // 2. Clear Error state
+    setExtractionErrors((prev) => {
+      const next = { ...prev };
+      delete next[idToRemove];
+      return next;
     });
+
+    // 3. Remove Data
+    const { newData, newMetadata } = removeDataForFileId(
+      idToRemove,
+      fileData,
+      editMetadata,
+    );
 
     setFileData(newData);
     setEditMetadata(newMetadata);
+  };
+
+  // --- MANUAL RETRY (REFINE) ---
+  const handleManualExtract = async (refFile: ReferenceFile) => {
+    if (!fileData) return;
+    commitToHistory();
+    // Pass current state. runExtraction handles the cleanup.
+    const result = await runExtraction(refFile, fileData, editMetadata);
+    if (result) {
+      setFileData(result.updatedData);
+      setEditMetadata(result.newMetadata);
+    }
   };
 
   // --- Editing ---
@@ -428,9 +472,10 @@ export default function Home() {
       return "bg-purple-900/40 text-purple-100 ring-1 ring-inset ring-purple-500/50";
 
     if (typeof source === "string" && source.startsWith("extraction-")) {
-      const fileIndex = parseInt(source.split("-")[1], 10);
-      if (!isNaN(fileIndex)) {
-        return FILE_CELL_VARIANTS[fileIndex % FILE_CELL_VARIANTS.length];
+      const id = source.replace("extraction-", "");
+      const refFile = extraFiles.find((f) => f.id === id);
+      if (refFile) {
+        return FILE_CELL_VARIANTS[refFile.colorIndex];
       }
     }
     return "";
@@ -530,7 +575,7 @@ export default function Home() {
             </button>
           )}
 
-          {/* UPDATED LEGEND: Removed "Extraction" */}
+          {/* Legend - Removed "Extraction" item */}
           {hasEdits && (
             <div className="ml-2 flex items-center gap-3 text-xs">
               <div className="flex items-center gap-1">
@@ -544,9 +589,10 @@ export default function Home() {
             </div>
           )}
 
-          {!!error && (
+          {/* Main File Load Error Only */}
+          {!!mainFileError && (
             <div className="ml-2 font-medium whitespace-nowrap text-red-400">
-              {error}
+              {mainFileError}
             </div>
           )}
 
@@ -567,33 +613,62 @@ export default function Home() {
               <span className="mr-2 text-xs font-semibold text-slate-500 uppercase">
                 References:
               </span>
-              {extraFiles.map((file, idx) => {
-                const colorClass =
-                  FILE_CHIP_VARIANTS[idx % FILE_CHIP_VARIANTS.length];
-                // Check if this specific index is processing
-                const isExtracting = extractingFileIndices.includes(idx);
+              {extraFiles.map((refFile) => {
+                const colorClass = FILE_CHIP_VARIANTS[refFile.colorIndex];
+                const isExtracting = extractingFileIds.includes(refFile.id);
+                // Check if this file has a specific error
+                const fileError = extractionErrors[refFile.id];
 
                 return (
                   <div
-                    key={idx}
+                    key={refFile.id}
                     className={cn(
                       "flex items-center gap-2 rounded border px-2 py-1 text-xs shadow-sm transition-all",
                       colorClass,
+                      // Visual cue if error (optional, adds red tint)
+                      fileError && "border-red-500/50 bg-red-900/20",
                     )}
                   >
-                    <span className="max-w-[150px] truncate" title={file.name}>
-                      {file.name}
+                    <span
+                      className="max-w-[150px] truncate"
+                      title={refFile.file.name}
+                    >
+                      {refFile.file.name}
                     </span>
 
-                    {/* Loading Indicator */}
+                    {/* STATUS INDICATORS */}
                     {isExtracting ? (
                       <span className="ml-1 h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/50 border-t-white"></span>
+                    ) : fileError ? (
+                      // ERROR STATE: Warning Icon + Tooltip
+                      <div className="group relative ml-1 flex items-center justify-center">
+                        <button
+                          onClick={() => handleManualExtract(refFile)}
+                          className="cursor-pointer text-red-400 hover:text-red-300"
+                        >
+                          <WarningIcon className="h-4 w-4" />
+                        </button>
+                        {/* CSS Tooltip */}
+                        <div className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 hidden w-max max-w-[250px] -translate-x-1/2 rounded bg-black/90 px-3 py-2 text-xs text-white shadow-xl ring-1 ring-white/10 group-hover:block">
+                          {fileError}
+                          <div className="ring-r-1 ring-b-1 absolute top-full left-1/2 -mt-1 h-2 w-2 -translate-x-1/2 rotate-45 bg-black/90 ring-white/10"></div>
+                        </div>
+                      </div>
                     ) : (
-                      <div className="w-3.5"></div> // Spacer
+                      // SUCCESS STATE: Magic Wand
+                      <button
+                        onClick={() => handleManualExtract(refFile)}
+                        className={cn(
+                          "ml-1 cursor-pointer rounded p-0.5 text-white/70 hover:bg-white/20 hover:text-white",
+                        )}
+                        title="Re-run extraction (Refine)"
+                      >
+                        <MagicIcon className="h-3.5 w-3.5" />
+                      </button>
                     )}
 
                     <button
-                      onClick={() => removeExtraFile(idx)}
+                      onClick={() => removeExtraFile(refFile.id)}
                       disabled={isExtracting}
                       className="cursor-pointer rounded-full p-0.5 opacity-60 hover:bg-black/20 hover:text-white hover:opacity-100"
                     >

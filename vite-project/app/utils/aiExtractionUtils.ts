@@ -23,25 +23,35 @@ export async function extractDataFromReference(
   try {
     const base64Data = await readFileAsBase64(file);
 
+    // NEW PROMPT: "Technical Analyst" - Finds specific parts in text, ignores generic code/noise.
     const prompt = `
-      You are an expert Estimation Engineer for Control Cabinets (Schaltschrankbau).
+      ROLE: Technical Specification Analyst.
       
-      YOUR TASK:
-      Analyze the attached document (PDF/Image/Text). 
-      It might be a structured Bill of Materials (BOM) OR a textual Specification (Lastenheft).
-      
-      1. IDENTIFY components, enclosures, parts, or billable items mentioned.
-      2. MAP them to the target spreadsheet headers provided below.
+      TASK: Extract a Bill of Materials (BOM) from the provided document.
+      The document might be a PDF Specification (Lastenheft), a Catalog, or a Technical Drawing.
       
       TARGET HEADERS:
       ${JSON.stringify(currentHeaders)}
       
-      RULES:
-      - If a column in the headers doesn't match data in the doc, return an empty string "" for that cell.
-      - If the document is a "Lastenheft" (text spec), infer the components needed (e.g., if it says "5x VX25 2000x800", create a row for it).
-      - Do not include header rows from the source document.
-      - STRICTLY return a JSON Array of Arrays. 
-      - NO MARKDOWN, NO CODE BLOCKS, NO CONVERSATIONAL TEXT. Just the raw array.
+      EXTRACTION RULES:
+      1. SCAN the text for explicit mentions of specific hardware components, part numbers, or material specifications.
+         - Look for keywords like "Best.-Nr.", "Order No.", "Type", "Typ", "Lieferant" (Supplier), "Hersteller" (Manufacturer).
+         - Example found in text: "RITTAL Bohrschraube M5 x 16mm, Lieferant Sonepar SZ 2487.000" -> Extract this!
+      
+      2. MAPPING:
+         - Map the found item Name/Description to the column like "Bezeichnung" or "Description".
+         - Map the Part Number to "Typ / Artikelnr. / Bestellnr.".
+         - Map the Brand/Supplier to "Hersteller".
+         - If a quantity is mentioned (e.g. "4x"), use it. If it is a general instruction ("Use this screw"), default Quantity to "1" or "".
+
+      3. ANTI-HALLUCINATION PROTOCOL:
+         - ONLY output items clearly written in the document.
+         - If the file is a Python script, Source Code, or generic prose without part numbers, RETURN AN EMPTY ARRAY [].
+         - DO NOT invent a standard BOM. If the file doesn't list "Circuit Breaker", do not add one.
+
+      OUTPUT FORMAT:
+      - Return ONLY a raw JSON Array of Arrays matching the target headers.
+      - No markdown formatting.
     `;
 
     const contents = [
@@ -63,7 +73,7 @@ export async function extractDataFromReference(
       await generateContentWithFallback(
         startModel,
         availableModels,
-        "You are a data extraction assistant.",
+        "You are a technical data extraction assistant. You output strict JSON arrays.",
         contents,
         (failed, next) =>
           console.warn(`Extraction: ${failed} failed, retrying with ${next}`),
@@ -71,27 +81,35 @@ export async function extractDataFromReference(
 
     console.log("Raw AI Response:", responseText);
 
-    // Robust parsing
+    // Robust parsing logic
     const startIndex = responseText.indexOf("[");
     const endIndex = responseText.lastIndexOf("]");
 
     if (startIndex === -1 || endIndex === -1) {
-      console.error("AI did not return valid array brackets");
-      return null;
+      console.warn("AI did not return valid JSON brackets. Assuming no data.");
+      return { data: [], finalModel };
     }
 
     const cleanJson = responseText.substring(startIndex, endIndex + 1);
-    const parsedData = JSON.parse(cleanJson);
 
-    if (
-      Array.isArray(parsedData) &&
-      (parsedData.length === 0 || Array.isArray(parsedData[0]))
-    ) {
-      // RETURN OBJECT WITH DATA AND MODEL
-      return { data: parsedData, finalModel };
+    try {
+      const parsedData = JSON.parse(cleanJson);
+      if (Array.isArray(parsedData)) {
+        // Check if it's an empty array (valid result for code files)
+        if (parsedData.length === 0) {
+          return { data: [], finalModel };
+        }
+        // Check if structure matches array of arrays
+        if (Array.isArray(parsedData[0])) {
+          return { data: parsedData, finalModel };
+        }
+      }
+      console.error("Parsed JSON structure invalid:", parsedData);
+      return null;
+    } catch (e) {
+      console.error("JSON Parse Error:", e);
+      return null;
     }
-
-    return null;
   } catch (error) {
     console.error("Extraction Failed:", error);
     return null;
