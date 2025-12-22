@@ -394,6 +394,9 @@ export default function Home() {
   const handleAutoQuote = async () => {
     if (!fileData || fileData.length === 0) return;
     setIsQuoting(true);
+    setMainFileError(undefined);
+
+    // Save state BEFORE adding columns, in case we need to revert or if user cancels (implied)
     commitToHistory();
 
     try {
@@ -422,11 +425,10 @@ export default function Home() {
         colIndices[colName] = idx;
       });
 
-      // Update data with new headers
+      // Update data with new headers locally for the AI context
       updatedData[0] = updatedHeaders;
 
       // 2. Call AI
-      // We pass the BODY rows (slice 1)
       const bodyRows = updatedData.slice(1);
       const quotes = await quoteProducts(
         bodyRows,
@@ -435,10 +437,10 @@ export default function Home() {
         availableModels,
       );
 
-      if (quotes) {
+      if (quotes && quotes.length > 0) {
         // 3. Merge Results
         quotes.forEach((quote) => {
-          // quote.rowId is 1-based index from utils logic
+          // quote.rowId is 1-based index
           const rowIndex = quote.rowId;
 
           if (rowIndex < updatedData.length) {
@@ -470,9 +472,16 @@ export default function Home() {
           }
         });
 
+        // ONLY update state if we actually got results
         setFileData(updatedData);
         setEditMetadata(updatedMeta);
         setRowSources(updatedSources);
+      } else {
+        // Handle no results
+        setMainFileError(
+          "Quoting failed or found no results. Data not modified.",
+        );
+        // We do NOT update fileData, so the empty columns are not permanently added
       }
     } catch (e) {
       console.error("Auto Quoting error", e);

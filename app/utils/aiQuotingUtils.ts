@@ -6,6 +6,7 @@ export type QuotedRow = {
   netPricePerUnit: string | number;
   estimatedDelivery: string;
   packQuantity: string | number;
+  sourceUrl: string; // <--- ADDED: Explicit URL field
   reasoning: string;
 };
 
@@ -35,15 +36,21 @@ export async function quoteProducts(
     SEARCH STRATEGY:
     1. **Search Query**: For each item, search for "Conrad [Part Number] [Manufacturer]".
     2. **Formatting**: If a search fails, try different formats (e.g. "8806.000" instead of "8806000").
-    3. **Verify**: Ensure the product page matches the description (e.g., "Rittal VX25").
+    3. **Verify**: Ensure the product page matches the description.
 
     PRICING RULES:
     1. **Net Price**: We need B2B (Net) prices. If only Gross (with VAT) is found, calculate: Net = Gross / 1.19.
     2. **Pack Size**: Check if it's a pack (e.g. "Pack of 10").
     3. **Delivery**: Look for "Sofort verfügbar" (1-3 days) or specific dates.
 
+    OUTPUT REQUIREMENTS:
+    - You MUST return a JSON Array.
+    - You MUST return an object for EVERY single input row.
+    - **sourceUrl**: You MUST provide the direct URL to the product page found.
+    - If price is not visible in snippet but product is found, set price to "Check Site" and return the URL.
+    - If a product is NOT found, set values to "N/A", sourceUrl to "", and reasoning to "Product not found".
+
     OUTPUT FORMAT (JSON ONLY):
-    Return a valid JSON Array.
     [
       {
         "rowId": 123,
@@ -51,6 +58,7 @@ export async function quoteProducts(
         "netPricePerUnit": "12.55",
         "packQuantity": 10,
         "estimatedDelivery": "1-3 Werktage",
+        "sourceUrl": "https://www.conrad.de/de/p/rittal-vx-...",
         "reasoning": "Found on Conrad.de (Art. 2251303). Price 149.35€ Gross. In Stock."
       }
     ]
@@ -62,26 +70,36 @@ export async function quoteProducts(
     const { text: responseText } = await generateContentWithFallback(
       startModel,
       availableModels,
-      "You are a procurement agent with access to Google Search. You always verify prices online.",
+      "You are a procurement agent with access to Google Search. You always return the source URL.",
       contents,
       undefined,
       { temperature: 0.1 },
-      // FIXED: Use correct property name for TypeScript compatibility
-      [{ googleSearchRetrieval: {} }],
+      // The correct tool definition for Gemini 2.0
+      // @ts-ignore
+      [{ googleSearch: {} }],
     );
 
     console.log("Quoting Response:", responseText);
 
-    // Clean and Parse JSON
-    const startIndex = responseText.indexOf("[");
-    const endIndex = responseText.lastIndexOf("]");
+    // Robust parsing to handle Markdown blocks
+    const jsonMatch =
+      responseText.match(/```json\s*([\s\S]*?)\s*```/) ||
+      responseText.match(/\[[\s\S]*\]/);
 
-    if (startIndex === -1 || endIndex === -1) return null;
+    if (!jsonMatch) {
+      console.warn("No JSON found in response");
+      return null;
+    }
 
-    const cleanJson = responseText.substring(startIndex, endIndex + 1);
-    const parsedData = JSON.parse(cleanJson);
+    const cleanJson = jsonMatch[0].replace(/```json|```/g, "").trim();
 
-    return parsedData;
+    try {
+      const parsedData = JSON.parse(cleanJson);
+      return Array.isArray(parsedData) ? parsedData : null;
+    } catch (e) {
+      console.error("JSON Parse Error:", e);
+      return null;
+    }
   } catch (error) {
     console.error("Quoting Failed:", error);
     return null;
