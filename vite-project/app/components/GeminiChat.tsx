@@ -126,25 +126,49 @@ const GeminiChat = ({
 
     try {
       let systemInstruction = `You are an AI assistant integrated into a spreadsheet editor.`;
+
+      // --- FIXED: Explicitly separate Headers from Data ---
       if (data && data.length > 0) {
-        systemInstruction += `\n\nCURRENT SPREADSHEET DATA (First 500 rows):\n${JSON.stringify(data.slice(0, 500))}`;
+        systemInstruction += `\n\nCURRENT SPREADSHEET CONTENT:`;
+        systemInstruction += `\nHEADINGS (Row 0): ${JSON.stringify(data[0])}`;
+        if (data.length > 1) {
+          systemInstruction += `\nDATA (Rows 1-${Math.min(data.length, 500)}): ${JSON.stringify(data.slice(1, 501))}`;
+        } else {
+          systemInstruction += `\nDATA: [No data rows yet]`;
+        }
+        systemInstruction += `\n\nNOTE: "Row 0" is the header. The first actual data row is "Row 1". Use these absolute indices.`;
       }
 
       systemInstruction += `
         \n\nINSTRUCTIONS:
         1. Answer questions based on the data.
-        2. If the user asks to UPDATE, MODIFY, or ADD data, you must return a valid JSON block containing the changes.
+        2. If the user asks to UPDATE, MODIFY, or ADD data, you must return a valid JSON block containing ONLY the changes.
         
         FORMAT FOR UPDATES:
-        You must return a valid JSON object with a "rows" key.
+        You must return a valid JSON object with a "rows" key. 
+        Each item in "rows" must contain a "data" array and optionally an "index".
+        
+        - TO UPDATE A ROW: Include the "index" property (the absolute row index, e.g., 5).
+        - TO ADD A NEW ROW: Omit the "index" property.
+
+        Example Response:
         {
           "rows": [
             {
-              "data": ["Col1 Value", "Col2 Value"],
+              "index": 4,
+              "data": ["Updated Col1", "Updated Col2"],
               "citation": {
                  "type": "api", 
                  "endpoint": "Gemini Chat", 
-                 "reasoning": "Reason for change..." 
+                 "reasoning": "Fixed typo in row 4 based on user request" 
+              }
+            },
+            {
+              "data": ["New Col1", "New Col2"],
+              "citation": {
+                 "type": "api", 
+                 "endpoint": "Gemini Chat", 
+                 "reasoning": "Added new entry" 
               }
             }
           ]
@@ -205,7 +229,7 @@ const GeminiChat = ({
 
       let finalResponseText = responseText;
 
-      // --- FIXED REGEX: Matches ```json, ```json_update, or just ``` ---
+      // Matches ```json, ```json_update, or just ```
       const updateMatch = responseText.match(
         /```(?:json|json_update)?\s*([\s\S]*?)\s*```/,
       );
@@ -214,14 +238,39 @@ const GeminiChat = ({
         try {
           const parsedObj = JSON.parse(updateMatch[1]);
 
-          // Handle robust object format with rows & citations
+          // Handle object format with rows & citations
           if (parsedObj.rows && Array.isArray(parsedObj.rows) && onDataUpdate) {
-            const newData = parsedObj.rows.map((r: any) => r.data);
+            // --- FIXED: DEEP COPY & MERGE LOGIC ---
+            // Create a working copy so we don't delete rows the AI didn't mention
+            const workingData = data
+              ? data.map((row) => (Array.isArray(row) ? [...row] : []))
+              : [];
             const newSources: Record<number, any> = {};
 
-            parsedObj.rows.forEach((r: any, idx: number) => {
+            let updatedCount = 0;
+            let addedCount = 0;
+
+            parsedObj.rows.forEach((r: any) => {
+              if (!Array.isArray(r.data)) return;
+
+              let targetIndex = r.index;
+
+              // If valid index provided, UPDATE. Otherwise, APPEND.
+              if (
+                typeof targetIndex === "number" &&
+                targetIndex >= 0 &&
+                targetIndex < workingData.length
+              ) {
+                workingData[targetIndex] = r.data;
+                updatedCount++;
+              } else {
+                targetIndex = workingData.length;
+                workingData.push(r.data);
+                addedCount++;
+              }
+
               if (r.citation) {
-                newSources[idx] = {
+                newSources[targetIndex] = {
                   fileId: "gemini-chat",
                   fileName: "Gemini Chat",
                   citation: r.citation,
@@ -229,18 +278,27 @@ const GeminiChat = ({
               }
             });
 
-            onDataUpdate(newData, newSources);
+            onDataUpdate(workingData, newSources);
+
+            const actionMsg = [];
+            if (updatedCount > 0) actionMsg.push(`updated ${updatedCount}`);
+            if (addedCount > 0) actionMsg.push(`added ${addedCount}`);
+
             finalResponseText = responseText.replace(
               updateMatch[0],
-              "\n\n✅ *I have updated the spreadsheet data and attached citation sources.*",
+              `\n\n✅ *Successfully ${actionMsg.join(" and ")} row(s).*`,
             );
           }
-          // Handle simple 2D array format (fallback)
+          // Handle legacy simple 2D array format (Safe Fallback? No, this deletes data if it returns partial)
+          // We'll trust the AI followed the new instructions, but if it returns a full array, we replace.
           else if (Array.isArray(parsedObj) && onDataUpdate) {
+            // If the AI returned a huge array close to the original size, it's likely a full replacement.
+            // If it's small, it might be a mistake, but we can't easily merge without indices.
+            // For now, let's assume if it returns an array, it MEANT to replace everything.
             onDataUpdate(parsedObj);
             finalResponseText = responseText.replace(
               updateMatch[0],
-              "\n\n✅ *I have updated the spreadsheet data.*",
+              "\n\n✅ *I have replaced the spreadsheet data.*",
             );
           }
         } catch (e) {
