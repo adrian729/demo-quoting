@@ -8,6 +8,7 @@ import {
 import ExportActions from "~/components/ExportActions";
 import GeminiChat from "~/components/GeminiChat";
 import {
+  BookIcon, // NEW
   MagicIcon,
   PaperClipIcon,
   RedoIcon,
@@ -34,6 +35,14 @@ import type { Route } from "./+types/home";
 
 type EditingCell = { rowIndex: number; colIndex: number };
 type EditSource = "user" | "ai" | string;
+
+// NEW: Type for Source info per row
+type RowSourceInfo = {
+  fileId: string;
+  fileName: string;
+  page: number | string;
+  quote: string;
+};
 
 // Stable Reference File Object
 type ReferenceFile = {
@@ -76,23 +85,28 @@ export default function Home() {
   const [fileData, setFileData] = useState<unknown[][]>();
   const [fileName, setFileName] = useState<string>("");
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
-
-  // Renamed to clarify this is for the MAIN file load error
   const [mainFileError, setMainFileError] = useState<string>();
-
   const [detectedFormat, setDetectedFormat] =
     useState<SupportedExportType>("xlsx");
 
   const [extraFiles, setExtraFiles] = useState<ReferenceFile[]>([]);
   const [extractingFileIds, setExtractingFileIds] = useState<string[]>([]);
-
-  // NEW: Track errors per file ID
   const [extractionErrors, setExtractionErrors] = useState<
     Record<string, string>
   >({});
 
-  const [colorCounter, setColorCounter] = useState(0);
+  // NEW: State to store the source info for specific rows
+  // Key = Row Index, Value = Source Info
+  const [rowSources, setRowSources] = useState<Record<number, RowSourceInfo>>(
+    {},
+  );
 
+  // NEW: State for the Source Modal
+  const [viewingSource, setViewingSource] = useState<RowSourceInfo | null>(
+    null,
+  );
+
+  const [colorCounter, setColorCounter] = useState(0);
   const { availableModels, currentModel, setCurrentModel } = useGemini();
   const [fallbackWarning, setFallbackWarning] = useState<string | null>(null);
 
@@ -107,6 +121,7 @@ export default function Home() {
   type HistoryState = {
     data: unknown[][];
     metadata: Record<string, EditSource>;
+    sources: Record<number, RowSourceInfo>; // Added sources to history
   };
   const [history, setHistory] = useState<HistoryState[]>([]);
   const [future, setFuture] = useState<HistoryState[]>([]);
@@ -132,33 +147,44 @@ export default function Home() {
   const commitToHistory = useCallback(() => {
     if (!fileData) return;
     setHistory((prev) => {
-      const newHistory = [...prev, { data: fileData, metadata: editMetadata }];
+      const newHistory = [
+        ...prev,
+        { data: fileData, metadata: editMetadata, sources: rowSources },
+      ];
       if (newHistory.length > MAX_HISTORY)
         return newHistory.slice(newHistory.length - MAX_HISTORY);
       return newHistory;
     });
     setFuture([]);
-  }, [fileData, editMetadata]);
+  }, [fileData, editMetadata, rowSources]);
 
   const handleUndo = useCallback(() => {
     if (history.length === 0 || !fileData) return;
     const previousState = history[history.length - 1];
     const newHistory = history.slice(0, -1);
-    setFuture((prev) => [{ data: fileData, metadata: editMetadata }, ...prev]);
+    setFuture((prev) => [
+      { data: fileData, metadata: editMetadata, sources: rowSources },
+      ...prev,
+    ]);
     setFileData(previousState.data);
     setEditMetadata(previousState.metadata);
+    setRowSources(previousState.sources || {}); // Restore sources
     setHistory(newHistory);
-  }, [history, fileData, editMetadata]);
+  }, [history, fileData, editMetadata, rowSources]);
 
   const handleRedo = useCallback(() => {
     if (future.length === 0 || !fileData) return;
     const nextState = future[0];
     const newFuture = future.slice(1);
-    setHistory((prev) => [...prev, { data: fileData, metadata: editMetadata }]);
+    setHistory((prev) => [
+      ...prev,
+      { data: fileData, metadata: editMetadata, sources: rowSources },
+    ]);
     setFileData(nextState.data);
     setEditMetadata(nextState.metadata);
+    setRowSources(nextState.sources || {});
     setFuture(newFuture);
-  }, [future, fileData, editMetadata]);
+  }, [future, fileData, editMetadata, rowSources]);
 
   const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.length) return;
@@ -166,6 +192,7 @@ export default function Home() {
     setMainFileError(undefined);
     setEditingCell(null);
     setEditMetadata({});
+    setRowSources({}); // Reset sources
     setHistory([]);
     setFuture([]);
     setExtraFiles([]);
@@ -205,26 +232,27 @@ export default function Home() {
       commitToHistory();
       setFileData(JSON.parse(JSON.stringify(originalFileData)));
       setEditMetadata({});
+      setRowSources({});
       setIsResetDialogOpen(false);
       setFallbackWarning(null);
       setExtractionErrors({});
     }
   };
 
-  // --- HELPER: Remove Data for a Specific File ID ---
-  // Returns cleaned data and metadata without setting state directly
-  // This allows us to "simulate" removal before adding new data
+  // --- HELPER: Remove Data & Sources for a Specific File ID ---
   const removeDataForFileId = (
     idToRemove: string,
     currentData: unknown[][],
     currentMeta: Record<string, EditSource>,
+    currentSources: Record<number, RowSourceInfo>,
   ) => {
-    const rowsKeepIndices: number[] = [0]; // Always keep headers
+    const rowsKeepIndices: number[] = [0]; // Keep headers
 
     for (let r = 1; r < currentData.length; r++) {
       let isFromThisFile = false;
+
+      // Check Metadata
       const row = currentData[r] as unknown[];
-      // Check metadata of first few cells (usually scanning one or two cols is enough)
       for (let c = 0; c < row.length; c++) {
         const meta = currentMeta[`${r}-${c}`];
         if (meta === `extraction-${idToRemove}`) {
@@ -232,6 +260,11 @@ export default function Home() {
           break;
         }
       }
+      // Double check source map just in case metadata was cleared manually but it's still linked
+      if (currentSources[r]?.fileId === idToRemove) {
+        isFromThisFile = true;
+      }
+
       if (!isFromThisFile) {
         rowsKeepIndices.push(r);
       }
@@ -239,43 +272,52 @@ export default function Home() {
 
     const newData = rowsKeepIndices.map((idx) => currentData[idx]);
     const newMetadata: Record<string, EditSource> = {};
+    const newSources: Record<number, RowSourceInfo> = {};
 
     rowsKeepIndices.forEach((oldRowIdx, newRowIdx) => {
+      // Shift Metadata
       const row = currentData[oldRowIdx] as unknown[];
       row.forEach((_, colIdx) => {
         const oldMeta = currentMeta[`${oldRowIdx}-${colIdx}`];
-        if (oldMeta) {
-          // Keep metadata for rows we preserved
-          newMetadata[`${newRowIdx}-${colIdx}`] = oldMeta;
-        }
+        if (oldMeta) newMetadata[`${newRowIdx}-${colIdx}`] = oldMeta;
       });
+
+      // Shift Sources
+      if (currentSources[oldRowIdx]) {
+        newSources[newRowIdx] = currentSources[oldRowIdx];
+      }
     });
 
-    return { newData, newMetadata };
+    return { newData, newMetadata, newSources };
   };
 
   // --- CORE EXTRACTION FUNCTION ---
-  // Now handles cleaning old data first (Refinement Logic)
   const runExtraction = async (
     refFile: ReferenceFile,
     currentData: unknown[][],
     currentMeta: Record<string, EditSource>,
+    currentSources: Record<number, RowSourceInfo>,
   ) => {
     if (!currentData || currentData.length === 0) return null;
 
     setExtractingFileIds((prev) => [...prev, refFile.id]);
-
-    // Clear previous error for this file so UI resets
     setExtractionErrors((prev) => {
       const next = { ...prev };
       delete next[refFile.id];
       return next;
     });
 
-    // 1. CLEAN: Remove existing data for this file ID first.
-    // This ensures we don't duplicate rows if the user clicks "Retry".
-    const { newData: cleanedData, newMetadata: cleanedMeta } =
-      removeDataForFileId(refFile.id, currentData, currentMeta);
+    // 1. CLEAN: Remove existing data/sources for this file
+    const {
+      newData: cleanedData,
+      newMetadata: cleanedMeta,
+      newSources: cleanedSources,
+    } = removeDataForFileId(
+      refFile.id,
+      currentData,
+      currentMeta,
+      currentSources,
+    );
 
     const headers = cleanedData[0];
     const attemptedModel = currentModel;
@@ -290,7 +332,7 @@ export default function Home() {
 
     setExtractingFileIds((prev) => prev.filter((id) => id !== refFile.id));
 
-    if (result && result.data.length > 0) {
+    if (result && result.rows.length > 0) {
       if (result.finalModel !== attemptedModel) {
         setCurrentModel(result.finalModel);
         setFallbackWarning(
@@ -300,39 +342,51 @@ export default function Home() {
 
       // 3. MERGE
       const startRowIndex = cleanedData.length;
-      const updatedData = [...cleanedData, ...result.data];
-      const newMetadata = { ...cleanedMeta };
 
-      result.data.forEach((row, rIdx) => {
-        row.forEach((_, cIdx) => {
-          newMetadata[`${startRowIndex + rIdx}-${cIdx}`] =
-            `extraction-${refFile.id}`;
+      // Extract raw data arrays from the result object
+      const newRowsData = result.rows.map((r) => r.data);
+      const updatedData = [...cleanedData, ...newRowsData];
+
+      const newMetadata = { ...cleanedMeta };
+      const newSources = { ...cleanedSources };
+
+      result.rows.forEach((rowObj, rIdx) => {
+        const actualRowIdx = startRowIndex + rIdx;
+
+        // Add Metadata for coloring
+        rowObj.data.forEach((_, cIdx) => {
+          newMetadata[`${actualRowIdx}-${cIdx}`] = `extraction-${refFile.id}`;
         });
+
+        // Add Source Info
+        newSources[actualRowIdx] = {
+          fileId: refFile.id,
+          fileName: refFile.file.name,
+          page: rowObj.citation.page,
+          quote: rowObj.citation.quote,
+        };
       });
 
-      return { updatedData, newMetadata };
+      return { updatedData, newMetadata, newSources };
     } else {
-      // 4. FAILURE CASE
-      // We set the error state for the chip icon/tooltip.
-      // IMPORTANT: We return the CLEANED data. This means if extraction fails
-      // on a retry, the old (potentially wrong) data is removed, leaving a clean slate.
       setExtractionErrors((prev) => ({
         ...prev,
-        [refFile.id]: `Could not extract valid data from ${refFile.file.name}. The AI might not have found tabular data matching your headers.`,
+        [refFile.id]: `Could not extract valid data from ${refFile.file.name}.`,
       }));
-
-      return { updatedData: cleanedData, newMetadata: cleanedMeta };
+      return {
+        updatedData: cleanedData,
+        newMetadata: cleanedMeta,
+        newSources: cleanedSources,
+      };
     }
   };
 
-  // --- ADD FILE + AUTO EXTRACT (BATCH SUPPORT) ---
+  // --- ADD FILE ---
   const handleAddExtraFile = async (e: ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.length) return;
     if (!fileData) return;
 
     const newFilesRaw = Array.from(e.target.files);
-
-    // 1. Create ReferenceFile objects
     const newRefFiles: ReferenceFile[] = newFilesRaw.map((file, i) => ({
       id: crypto.randomUUID(),
       file,
@@ -343,24 +397,26 @@ export default function Home() {
     setColorCounter((prev) => prev + newFilesRaw.length);
     commitToHistory();
 
-    // 2. Accumulate changes sequentially
-    // We must use local variables to chain the updates, otherwise
-    // the second file will try to update based on stale 'fileData'.
     let workingData = [...fileData];
     let workingMeta = { ...editMetadata };
+    let workingSources = { ...rowSources };
 
     for (const refFile of newRefFiles) {
-      const result = await runExtraction(refFile, workingData, workingMeta);
-
+      const result = await runExtraction(
+        refFile,
+        workingData,
+        workingMeta,
+        workingSources,
+      );
       if (result) {
         workingData = result.updatedData;
         workingMeta = result.newMetadata;
-        // Update state progressively so user sees rows popping in
+        workingSources = result.newSources;
         setFileData(workingData);
         setEditMetadata(workingMeta);
+        setRowSources(workingSources);
       }
     }
-
     e.target.value = "";
   };
 
@@ -369,40 +425,43 @@ export default function Home() {
     if (!fileData) return;
     commitToHistory();
 
-    // 1. Remove from UI
     setExtraFiles((prev) => prev.filter((f) => f.id !== idToRemove));
-
-    // 2. Clear Error state
     setExtractionErrors((prev) => {
       const next = { ...prev };
       delete next[idToRemove];
       return next;
     });
 
-    // 3. Remove Data
-    const { newData, newMetadata } = removeDataForFileId(
+    const { newData, newMetadata, newSources } = removeDataForFileId(
       idToRemove,
       fileData,
       editMetadata,
+      rowSources,
     );
 
     setFileData(newData);
     setEditMetadata(newMetadata);
+    setRowSources(newSources);
   };
 
-  // --- MANUAL RETRY (REFINE) ---
+  // --- MANUAL RETRY ---
   const handleManualExtract = async (refFile: ReferenceFile) => {
     if (!fileData) return;
     commitToHistory();
-    // Pass current state. runExtraction handles the cleanup.
-    const result = await runExtraction(refFile, fileData, editMetadata);
+    const result = await runExtraction(
+      refFile,
+      fileData,
+      editMetadata,
+      rowSources,
+    );
     if (result) {
       setFileData(result.updatedData);
       setEditMetadata(result.newMetadata);
+      setRowSources(result.newSources);
     }
   };
 
-  // --- Editing ---
+  // --- STANDARD EDITING (omitted irrelevant parts for brevity, using same logic) ---
   const updateDataWithMetadata = (
     newData: unknown[][],
     newMetadata: Record<string, EditSource>,
@@ -462,21 +521,16 @@ export default function Home() {
     else if (e.key === "Escape") cancelEdit();
   };
 
-  // --- Highlight Logic ---
   const getCellHighlightClass = (rowIndex: number, colIndex: number) => {
     const source = editMetadata[`${rowIndex}-${colIndex}`];
-
     if (source === "user")
       return "bg-blue-900/40 text-blue-100 ring-1 ring-inset ring-blue-500/50";
     if (source === "ai")
       return "bg-purple-900/40 text-purple-100 ring-1 ring-inset ring-purple-500/50";
-
     if (typeof source === "string" && source.startsWith("extraction-")) {
       const id = source.replace("extraction-", "");
       const refFile = extraFiles.find((f) => f.id === id);
-      if (refFile) {
-        return FILE_CELL_VARIANTS[refFile.colorIndex];
-      }
+      if (refFile) return FILE_CELL_VARIANTS[refFile.colorIndex];
     }
     return "";
   };
@@ -489,17 +543,14 @@ export default function Home() {
 
   return (
     <div className="flex h-screen w-full flex-col gap-4 bg-slate-900 p-6 text-slate-200">
-      {/* 1. Header Section */}
+      {/* ... Header Section (Identical to previous) ... */}
       <div className="flex shrink-0 flex-col gap-4 border-b border-slate-700 pb-4">
-        {/* Top Row: Main Actions */}
+        {/* Actions Row */}
         <div className="flex items-center gap-4">
           <span className="font-semibold text-slate-300">File</span>
           <label
             className={cn(
-              "flex min-w-35 items-center justify-center px-4 py-2",
-              "border border-slate-600 bg-slate-700 hover:bg-slate-600",
-              "cursor-pointer rounded-lg transition-colors",
-              "text-sm font-semibold text-white",
+              "flex min-w-35 cursor-pointer items-center justify-center rounded-lg border border-slate-600 bg-slate-700 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-slate-600",
             )}
           >
             {uploadedFileName || "Open Spreadsheet..."}
@@ -510,18 +561,13 @@ export default function Home() {
               className="hidden"
             />
           </label>
-
           {fileData && (
             <label
               className={cn(
-                "flex items-center gap-2 px-3 py-2",
-                "border border-slate-700 bg-slate-800 hover:bg-slate-700",
-                "cursor-pointer rounded-lg transition-colors",
-                "text-sm font-medium text-slate-300 hover:text-white",
+                "flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-700 hover:text-white",
               )}
             >
-              <PaperClipIcon className="h-4 w-4" />
-              Add Reference
+              <PaperClipIcon className="h-4 w-4" /> Add Reference
               <input
                 type="file"
                 multiple
@@ -530,7 +576,6 @@ export default function Home() {
               />
             </label>
           )}
-
           {fileData && (
             <div className="mx-2 flex items-center gap-1 border-r border-l border-slate-700 px-4">
               <button
@@ -559,7 +604,6 @@ export default function Home() {
               </button>
             </div>
           )}
-
           {fileData && (
             <button
               onClick={() => setIsResetDialogOpen(true)}
@@ -574,8 +618,6 @@ export default function Home() {
               <ResetIcon className="h-4 w-4" /> Reset
             </button>
           )}
-
-          {/* Legend - Removed "Extraction" item */}
           {hasEdits && (
             <div className="ml-2 flex items-center gap-3 text-xs">
               <div className="flex items-center gap-1">
@@ -588,14 +630,11 @@ export default function Home() {
               </div>
             </div>
           )}
-
-          {/* Main File Load Error Only */}
           {!!mainFileError && (
             <div className="ml-2 font-medium whitespace-nowrap text-red-400">
               {mainFileError}
             </div>
           )}
-
           {fileData && (
             <ExportActions
               data={fileData}
@@ -606,7 +645,7 @@ export default function Home() {
           )}
         </div>
 
-        {/* Bottom Row: Reference Files List & Model Selector */}
+        {/* References Row */}
         {extraFiles.length > 0 && (
           <div className="flex items-center justify-between rounded-lg bg-slate-800/50 px-3 py-2">
             <div className="flex flex-wrap items-center gap-2">
@@ -616,16 +655,13 @@ export default function Home() {
               {extraFiles.map((refFile) => {
                 const colorClass = FILE_CHIP_VARIANTS[refFile.colorIndex];
                 const isExtracting = extractingFileIds.includes(refFile.id);
-                // Check if this file has a specific error
                 const fileError = extractionErrors[refFile.id];
-
                 return (
                   <div
                     key={refFile.id}
                     className={cn(
                       "flex items-center gap-2 rounded border px-2 py-1 text-xs shadow-sm transition-all",
                       colorClass,
-                      // Visual cue if error (optional, adds red tint)
                       fileError && "border-red-500/50 bg-red-900/20",
                     )}
                   >
@@ -635,12 +671,9 @@ export default function Home() {
                     >
                       {refFile.file.name}
                     </span>
-
-                    {/* STATUS INDICATORS */}
                     {isExtracting ? (
                       <span className="ml-1 h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/50 border-t-white"></span>
                     ) : fileError ? (
-                      // ERROR STATE: Warning Icon + Tooltip
                       <div className="group relative ml-1 flex items-center justify-center">
                         <button
                           onClick={() => handleManualExtract(refFile)}
@@ -648,14 +681,12 @@ export default function Home() {
                         >
                           <WarningIcon className="h-4 w-4" />
                         </button>
-                        {/* CSS Tooltip */}
                         <div className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 hidden w-max max-w-[250px] -translate-x-1/2 rounded bg-black/90 px-3 py-2 text-xs text-white shadow-xl ring-1 ring-white/10 group-hover:block">
                           {fileError}
                           <div className="ring-r-1 ring-b-1 absolute top-full left-1/2 -mt-1 h-2 w-2 -translate-x-1/2 rotate-45 bg-black/90 ring-white/10"></div>
                         </div>
                       </div>
                     ) : (
-                      // SUCCESS STATE: Magic Wand
                       <button
                         onClick={() => handleManualExtract(refFile)}
                         className={cn(
@@ -666,7 +697,6 @@ export default function Home() {
                         <MagicIcon className="h-3.5 w-3.5" />
                       </button>
                     )}
-
                     <button
                       onClick={() => removeExtraFile(refFile.id)}
                       disabled={isExtracting}
@@ -678,10 +708,8 @@ export default function Home() {
                 );
               })}
             </div>
-
             <div className="flex items-center gap-2 border-l border-slate-700 pl-4">
               <span className="text-xs text-slate-500">Extraction Model:</span>
-
               {fallbackWarning && (
                 <div className="group relative flex items-center justify-center">
                   <div className="animate-pulse cursor-help text-orange-400">
@@ -693,7 +721,6 @@ export default function Home() {
                   </div>
                 </div>
               )}
-
               <ModelSelector
                 models={availableModels}
                 selectedModel={currentModel}
@@ -709,110 +736,107 @@ export default function Home() {
         {/* Left Side: Data Table */}
         <div className="flex min-w-0 flex-1 flex-col transition-all duration-300">
           {fileData ? (
-            <div className="flex-1 overflow-hidden rounded-lg border border-slate-700 bg-slate-800 shadow-lg">
+            <div className="relative flex-1 overflow-hidden rounded-lg border border-slate-700 bg-slate-800 shadow-lg">
               <div className="h-full overflow-auto">
                 <table className="w-full border-collapse text-left text-sm text-slate-400">
                   <thead className="sticky top-0 z-10 bg-slate-900 text-xs font-bold text-slate-200 shadow-sm">
                     <tr>
-                      {[...headers].map((header, colIndex) => {
-                        const rowIndex = 0;
-                        const isEditing =
-                          editingCell?.rowIndex === rowIndex &&
-                          editingCell?.colIndex === colIndex;
-                        const highlight = getCellHighlightClass(
-                          rowIndex,
-                          colIndex,
-                        );
-                        return (
-                          <th
-                            key={colIndex}
-                            onDoubleClick={() =>
-                              startEditing(rowIndex, colIndex, header)
-                            }
-                            className={cn(
-                              "cursor-pointer border-b border-slate-700 px-6 py-3 tracking-wider whitespace-nowrap hover:bg-slate-800",
-                              !highlight &&
-                                (colIndex % 2 === 0
-                                  ? "bg-slate-900"
-                                  : "bg-slate-800"),
-                              highlight,
-                              isEditing && "p-0",
-                            )}
-                          >
-                            {isEditing ? (
-                              <input
-                                autoFocus
-                                type="text"
-                                value={tempValue}
-                                onChange={(e) => setTempValue(e.target.value)}
-                                onBlur={saveEdit}
-                                onKeyDown={handleInputKeyDown}
-                                className="h-full w-full rounded border-2 border-blue-500 bg-slate-700 px-2 py-1 text-xs font-bold text-white outline-none"
-                              />
-                            ) : (
-                              String(header ?? "")
-                            )}
-                          </th>
-                        );
-                      })}
+                      {/* NEW: Action/Status Column Header */}
+                      <th className="sticky left-0 z-20 w-10 border-b border-slate-700 bg-slate-900 px-3 py-3 text-center">
+                        <span className="sr-only">Status</span>
+                      </th>
+                      {[...headers].map((header, colIndex) => (
+                        <th
+                          key={colIndex}
+                          onDoubleClick={() =>
+                            startEditing(0, colIndex, header)
+                          }
+                          className={cn(
+                            "cursor-pointer border-b border-slate-700 px-6 py-3 tracking-wider whitespace-nowrap hover:bg-slate-800",
+                            !getCellHighlightClass(0, colIndex) &&
+                              (colIndex % 2 === 0
+                                ? "bg-slate-900"
+                                : "bg-slate-800"),
+                            getCellHighlightClass(0, colIndex),
+                            editingCell?.rowIndex === 0 &&
+                              editingCell?.colIndex === colIndex &&
+                              "p-0",
+                          )}
+                        >
+                          {editingCell?.rowIndex === 0 &&
+                          editingCell?.colIndex === colIndex ? (
+                            <input
+                              autoFocus
+                              type="text"
+                              value={tempValue}
+                              onChange={(e) => setTempValue(e.target.value)}
+                              onBlur={saveEdit}
+                              onKeyDown={handleInputKeyDown}
+                              className="h-full w-full rounded border-2 border-blue-500 bg-slate-700 px-2 py-1 text-xs font-bold text-white outline-none"
+                            />
+                          ) : (
+                            String(header ?? "")
+                          )}
+                        </th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-700">
                     {bodyRows.map((row, rIndex) => {
                       const rowIndex = rIndex + 1;
+                      const rowSource = rowSources[rowIndex];
+
                       return (
                         <tr key={rowIndex}>
-                          {[...row].map((cell, colIndex) => {
-                            const isEditing =
-                              editingCell?.rowIndex === rowIndex &&
-                              editingCell?.colIndex === colIndex;
-                            const highlight = getCellHighlightClass(
-                              rowIndex,
-                              colIndex,
-                            );
-                            return (
-                              <td
-                                key={colIndex}
-                                onDoubleClick={() =>
-                                  startEditing(rowIndex, colIndex, cell)
-                                }
-                                className={cn(
-                                  "relative min-w-25 cursor-pointer px-6 py-4 font-medium whitespace-nowrap text-slate-300",
-                                  !highlight &&
-                                    (colIndex % 2 !== 0
-                                      ? "bg-slate-700/20"
-                                      : ""),
-                                  highlight,
-                                  "transition-colors",
-                                  isEditing && "p-0",
-                                )}
+                          {/* NEW: Action/Status Column Cell */}
+                          <td className="sticky left-0 z-10 border-b border-slate-700 bg-slate-900/95 px-3 py-4 text-center">
+                            {rowSource && (
+                              <button
+                                onClick={() => setViewingSource(rowSource)}
+                                className="cursor-pointer text-slate-500 transition-colors hover:text-emerald-400"
+                                title="View Source Citation"
                               >
-                                {isEditing ? (
-                                  <input
-                                    autoFocus
-                                    type="text"
-                                    value={tempValue}
-                                    onChange={(e) =>
-                                      setTempValue(e.target.value)
-                                    }
-                                    onBlur={saveEdit}
-                                    onKeyDown={handleInputKeyDown}
-                                    className="h-full w-full rounded border-2 border-blue-500 bg-slate-600 px-2 py-1.5 text-white outline-none"
-                                  />
-                                ) : (
-                                  <>
-                                    {String(cell ?? "") === "" ? (
-                                      <span className="absolute top-1 left-1 text-[10px] leading-none text-slate-400 italic opacity-60 select-none">
-                                        Empty
-                                      </span>
-                                    ) : (
-                                      String(cell)
-                                    )}
-                                  </>
-                                )}
-                              </td>
-                            );
-                          })}
+                                <BookIcon className="h-4 w-4" />
+                              </button>
+                            )}
+                          </td>
+                          {[...row].map((cell, colIndex) => (
+                            <td
+                              key={colIndex}
+                              onDoubleClick={() =>
+                                startEditing(rowIndex, colIndex, cell)
+                              }
+                              className={cn(
+                                "relative min-w-25 cursor-pointer px-6 py-4 font-medium whitespace-nowrap text-slate-300",
+                                !getCellHighlightClass(rowIndex, colIndex) &&
+                                  (colIndex % 2 !== 0 ? "bg-slate-700/20" : ""),
+                                getCellHighlightClass(rowIndex, colIndex),
+                                "transition-colors",
+                                editingCell?.rowIndex === rowIndex &&
+                                  editingCell?.colIndex === colIndex &&
+                                  "p-0",
+                              )}
+                            >
+                              {editingCell?.rowIndex === rowIndex &&
+                              editingCell?.colIndex === colIndex ? (
+                                <input
+                                  autoFocus
+                                  type="text"
+                                  value={tempValue}
+                                  onChange={(e) => setTempValue(e.target.value)}
+                                  onBlur={saveEdit}
+                                  onKeyDown={handleInputKeyDown}
+                                  className="h-full w-full rounded border-2 border-blue-500 bg-slate-600 px-2 py-1.5 text-white outline-none"
+                                />
+                              ) : String(cell ?? "") === "" ? (
+                                <span className="absolute top-1 left-1 text-[10px] leading-none text-slate-400 italic opacity-60 select-none">
+                                  Empty
+                                </span>
+                              ) : (
+                                String(cell)
+                              )}
+                            </td>
+                          ))}
                         </tr>
                       );
                     })}
@@ -850,6 +874,8 @@ export default function Home() {
           <SparklesIcon className="h-6 w-6 text-purple-400" />
         </button>
       )}
+
+      {/* Reset Dialog */}
       {isResetDialogOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
           <div className="w-full max-w-sm rounded-lg border border-slate-700 bg-slate-800 p-6 shadow-2xl">
@@ -867,6 +893,65 @@ export default function Home() {
                 className="rounded bg-red-600 px-4 py-2 text-white"
               >
                 Reset
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* NEW: Citation Source Modal */}
+      {viewingSource && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="relative w-full max-w-md rounded-lg border border-slate-700 bg-slate-800 p-6 shadow-2xl">
+            <button
+              onClick={() => setViewingSource(null)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white"
+            >
+              <XIcon className="h-5 w-5" />
+            </button>
+
+            <div className="mb-4 flex items-center gap-2">
+              <BookIcon className="h-5 w-5 text-emerald-400" />
+              <h3 className="text-lg font-bold text-slate-100">
+                Source Citation
+              </h3>
+            </div>
+
+            <div className="space-y-4 text-sm">
+              <div className="rounded border border-slate-700 bg-slate-900 p-3">
+                <span className="mb-1 block text-xs tracking-wider text-slate-500 uppercase">
+                  Document
+                </span>
+                <span className="font-medium text-emerald-400">
+                  {viewingSource.fileName}
+                </span>
+              </div>
+
+              <div className="rounded border border-slate-700 bg-slate-900 p-3">
+                <span className="mb-1 block text-xs tracking-wider text-slate-500 uppercase">
+                  Location
+                </span>
+                <span className="text-slate-300">
+                  Page {viewingSource.page}
+                </span>
+              </div>
+
+              <div className="rounded border border-slate-700 bg-slate-900 p-3">
+                <span className="mb-1 block text-xs tracking-wider text-slate-500 uppercase">
+                  Quote / Context
+                </span>
+                <blockquote className="border-l-2 border-slate-600 py-1 pl-3 text-slate-300 italic">
+                  "{viewingSource.quote}"
+                </blockquote>
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end">
+              <button
+                onClick={() => setViewingSource(null)}
+                className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-500"
+              >
+                Close
               </button>
             </div>
           </div>
