@@ -8,17 +8,33 @@ import {
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 export const DEFAULT_MODEL = "gemini-2.0-flash";
 
-// Initialize the new client
-const ai = new GoogleGenAI({ apiKey: API_KEY });
+// 1. Export a helper to check if AI is usable
+export const isAiEnabled = !!(API_KEY && API_KEY.trim().length > 0);
+
+// 2. Safely initialize the client
+let ai: GoogleGenAI | null = null;
+if (isAiEnabled) {
+  try {
+    ai = new GoogleGenAI({ apiKey: API_KEY });
+  } catch (error) {
+    console.error("Failed to initialize Gemini client:", error);
+  }
+}
 
 export async function fetchAvailableModels(): Promise<string[]> {
+  // If AI isn't enabled, just return the default so the UI doesn't break
+  if (!isAiEnabled) return [DEFAULT_MODEL];
+
   try {
-    // We can stick to the fetch implementation to ensure we get the exact list we expect,
-    // or use ai.models.list() if preferred. For safety during migration, keeping the fetch
-    // is reliable as it bypasses SDK method signature changes.
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models?key=${API_KEY}`,
     );
+    if (!response.ok) {
+      // Handle invalid key response gracefully
+      console.warn("Failed to fetch models, using default.");
+      return [DEFAULT_MODEL];
+    }
+
     const data = await response.json();
     if (data.models) {
       const models = data.models
@@ -47,6 +63,11 @@ export async function generateContentWithFallback(
   config: GenerateContentConfig = {},
   tools: Tool[] = [],
 ): Promise<{ text: string; finalModel: string }> {
+  // Guard clause: Fail fast if no AI
+  if (!ai) {
+    throw new Error("AI is not configured. Please check your .env file.");
+  }
+
   const getNextModel = (current: string, excluded: string[]) => {
     const idx = availableModels.indexOf(current);
     const next = availableModels
@@ -60,8 +81,8 @@ export async function generateContentWithFallback(
     failedList: string[],
   ): Promise<{ text: string; finalModel: string }> => {
     try {
-      // The new SDK call structure
-      const result = await ai.models.generateContent({
+      // @ts-ignore - 'ai' is checked above, but TS might not infer it inside the async closure
+      const result = await ai!.models.generateContent({
         model: modelName,
         contents: contents,
         config: {
@@ -71,7 +92,6 @@ export async function generateContentWithFallback(
         },
       });
 
-      // In @google/genai, .text is a getter property, not a function
       const text = result.text || "";
       return { text, finalModel: modelName };
     } catch (err) {
@@ -83,7 +103,7 @@ export async function generateContentWithFallback(
         if (onRetry) onRetry(modelName, nextModel);
         return attempt(nextModel, newFailedList);
       } else {
-        throw new Error("All available models failed.");
+        throw new Error("AI Request failed. Check your API Key or connection.");
       }
     }
   };

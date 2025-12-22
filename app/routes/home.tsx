@@ -34,6 +34,8 @@ import {
   SUPPORTED_EXPORT_TYPES,
   type SupportedExportType,
 } from "~/utils/excelUtils";
+// Import the check
+import { isAiEnabled } from "~/utils/geminiApi";
 import type { Route } from "./+types/home";
 
 // --- Types ---
@@ -88,7 +90,6 @@ const FILE_CELL_VARIANTS = [
 const getDomain = (url?: string) => {
   if (!url) return "AI Search";
   try {
-    // Handle cases where URL might be just a domain or incomplete
     const urlObj = new URL(url.startsWith("http") ? url : `https://${url}`);
     return urlObj.hostname.replace(/^www\./, "");
   } catch (e) {
@@ -470,16 +471,16 @@ export default function Home() {
             updatedMeta[`${rowIndex}-${colIndices["Price/Unit"]}`] = "ai";
             updatedMeta[`${rowIndex}-${colIndices["Est. Delivery"]}`] = "ai";
 
-            // Update Source Citation with proper dynamic URL and Domain
+            // Update Source Citation
             const domain = getDomain(quote.sourceUrl);
             updatedSources[rowIndex] = {
               fileId: "conrad-quoting",
               fileName: "AI Quoting",
               citation: {
                 type: "api",
-                endpoint: domain, // Shows "octo24.com" etc.
+                endpoint: domain,
                 reasoning: quote.reasoning,
-                url: quote.sourceUrl, // Passes the full URL to the modal
+                url: quote.sourceUrl,
               },
             };
           }
@@ -785,48 +786,57 @@ export default function Home() {
           </label>
           {fileData && (
             <>
-              <label
-                className={cn(
-                  "flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-700 hover:text-white",
-                )}
-              >
-                <PaperClipIcon className="h-4 w-4" /> Add Reference
-                <input
-                  type="file"
-                  multiple
-                  onChange={handleAddExtraFile}
-                  className="hidden"
-                />
-              </label>
+              {isAiEnabled ? (
+                <>
+                  <label
+                    className={cn(
+                      "flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-700 hover:text-white",
+                    )}
+                  >
+                    <PaperClipIcon className="h-4 w-4" /> Add Reference
+                    <input
+                      type="file"
+                      multiple
+                      onChange={handleAddExtraFile}
+                      className="hidden"
+                    />
+                  </label>
 
-              {/* NEW: Model Selector for Quoting */}
-              <div className="ml-2 flex items-center gap-2 border-l border-slate-700 pl-4">
-                <span className="hidden text-xs text-slate-500 xl:inline">
-                  Quoting Model:
-                </span>
-                <ModelSelector
-                  models={availableModels}
-                  selectedModel={currentModel}
-                  onSelect={setCurrentModel}
-                />
-              </div>
+                  {/* Model Selector for Quoting */}
+                  <div className="ml-2 flex items-center gap-2 border-l border-slate-700 pl-4">
+                    <span className="hidden text-xs text-slate-500 xl:inline">
+                      Quoting Model:
+                    </span>
+                    <ModelSelector
+                      models={availableModels}
+                      selectedModel={currentModel}
+                      onSelect={setCurrentModel}
+                    />
+                  </div>
 
-              <button
-                onClick={handleAutoQuote}
-                disabled={isQuoting}
-                className={cn(
-                  "flex items-center gap-2 rounded-lg border border-emerald-700/50 bg-emerald-900/20 px-3 py-2 text-sm font-medium text-emerald-300 transition-all hover:bg-emerald-900/40 hover:text-emerald-200 hover:shadow-lg hover:shadow-emerald-900/20",
-                  isQuoting && "cursor-wait opacity-70",
-                )}
-                title="Automatically fetch prices and delivery times from Conrad.de"
-              >
-                {isQuoting ? (
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-emerald-500/50 border-t-emerald-400" />
-                ) : (
-                  <BanknotesIcon className="h-4 w-4" />
-                )}
-                Auto Quote
-              </button>
+                  <button
+                    onClick={handleAutoQuote}
+                    disabled={isQuoting}
+                    className={cn(
+                      "flex items-center gap-2 rounded-lg border border-emerald-700/50 bg-emerald-900/20 px-3 py-2 text-sm font-medium text-emerald-300 transition-all hover:bg-emerald-900/40 hover:text-emerald-200 hover:shadow-lg hover:shadow-emerald-900/20",
+                      isQuoting && "cursor-wait opacity-70",
+                    )}
+                    title="Automatically fetch prices and delivery times from Conrad.de"
+                  >
+                    {isQuoting ? (
+                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-emerald-500/50 border-t-emerald-400" />
+                    ) : (
+                      <BanknotesIcon className="h-4 w-4" />
+                    )}
+                    Auto Quote
+                  </button>
+                </>
+              ) : (
+                <div className="ml-2 flex items-center gap-2 rounded-lg border border-yellow-700/50 bg-yellow-900/20 px-3 py-2 text-xs font-medium text-yellow-200">
+                  <WarningIcon className="h-4 w-4" />
+                  <span>AI Disabled (Missing API Key)</span>
+                </div>
+              )}
             </>
           )}
           {fileData && (
@@ -978,6 +988,7 @@ export default function Home() {
                 models={availableModels}
                 selectedModel={currentModel}
                 onSelect={setCurrentModel}
+                disabled={!isAiEnabled} // Disabled state
               />
             </div>
           </div>
@@ -1054,23 +1065,25 @@ export default function Home() {
                                   <BookIcon className="h-4 w-4" />
                                 </button>
                               )}
-                              <button
-                                onClick={() => handleSingleRowQuote(rowIndex)}
-                                disabled={isRowQuoting}
-                                className={cn(
-                                  "cursor-pointer rounded p-1 transition-colors hover:bg-slate-700",
-                                  isRowQuoting
-                                    ? "cursor-not-allowed opacity-50"
-                                    : "text-slate-500 hover:text-emerald-400",
-                                )}
-                                title="Quote this row"
-                              >
-                                {isRowQuoting ? (
-                                  <span className="block h-4 w-4 animate-spin rounded-full border-2 border-emerald-500/50 border-t-emerald-400" />
-                                ) : (
-                                  <BanknotesIcon className="h-4 w-4" />
-                                )}
-                              </button>
+                              {isAiEnabled && (
+                                <button
+                                  onClick={() => handleSingleRowQuote(rowIndex)}
+                                  disabled={isRowQuoting}
+                                  className={cn(
+                                    "cursor-pointer rounded p-1 transition-colors hover:bg-slate-700",
+                                    isRowQuoting
+                                      ? "cursor-not-allowed opacity-50"
+                                      : "text-slate-500 hover:text-emerald-400",
+                                  )}
+                                  title="Quote this row"
+                                >
+                                  {isRowQuoting ? (
+                                    <span className="block h-4 w-4 animate-spin rounded-full border-2 border-emerald-500/50 border-t-emerald-400" />
+                                  ) : (
+                                    <BanknotesIcon className="h-4 w-4" />
+                                  )}
+                                </button>
+                              )}
                             </div>
                           </td>
                           {/* Data Cells */}
@@ -1140,7 +1153,7 @@ export default function Home() {
         </div>
       </div>
 
-      {!isChatOpen && (
+      {!isChatOpen && isAiEnabled && (
         <button
           onClick={() => setIsChatOpen(true)}
           className="fixed right-8 bottom-8 z-50 flex h-14 w-14 cursor-pointer items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-slate-200 shadow-xl transition-all hover:-translate-y-1 hover:bg-slate-700 hover:text-white hover:shadow-2xl"
@@ -1209,7 +1222,7 @@ export default function Home() {
                 </span>
               </div>
 
-              {/* Field 1.5: URL (New) */}
+              {/* Field 1.5: URL */}
               {viewingSource.citation.type === "api" &&
                 viewingSource.citation.url && (
                   <div className="rounded border border-slate-700 bg-slate-900 p-3">
