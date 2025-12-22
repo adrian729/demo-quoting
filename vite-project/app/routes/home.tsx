@@ -8,7 +8,7 @@ import {
 import ExportActions from "~/components/ExportActions";
 import GeminiChat from "~/components/GeminiChat";
 import {
-  BookIcon, // NEW
+  BookIcon,
   MagicIcon,
   PaperClipIcon,
   RedoIcon,
@@ -20,7 +20,10 @@ import {
 } from "~/components/icons";
 import ModelSelector from "~/components/ModelSelector";
 import { useGemini } from "~/hooks/useGemini";
-import { extractDataFromReference } from "~/utils/aiExtractionUtils";
+import {
+  extractDataFromReference,
+  type ExtractionCitation,
+} from "~/utils/aiExtractionUtils";
 import { cn } from "~/utils/cn";
 import {
   isOfTypeSupportedExportType,
@@ -36,12 +39,11 @@ import type { Route } from "./+types/home";
 type EditingCell = { rowIndex: number; colIndex: number };
 type EditSource = "user" | "ai" | string;
 
-// NEW: Type for Source info per row
+// UPDATED: Comprehensive Source Info Type
 type RowSourceInfo = {
-  fileId: string;
-  fileName: string;
-  page: number | string;
-  quote: string;
+  fileId?: string; // Optional, only for files
+  fileName?: string; // Optional, only for files
+  citation: ExtractionCitation; // The Union Type from utils
 };
 
 // Stable Reference File Object
@@ -95,13 +97,9 @@ export default function Home() {
     Record<string, string>
   >({});
 
-  // NEW: State to store the source info for specific rows
-  // Key = Row Index, Value = Source Info
   const [rowSources, setRowSources] = useState<Record<number, RowSourceInfo>>(
     {},
   );
-
-  // NEW: State for the Source Modal
   const [viewingSource, setViewingSource] = useState<RowSourceInfo | null>(
     null,
   );
@@ -121,7 +119,7 @@ export default function Home() {
   type HistoryState = {
     data: unknown[][];
     metadata: Record<string, EditSource>;
-    sources: Record<number, RowSourceInfo>; // Added sources to history
+    sources: Record<number, RowSourceInfo>;
   };
   const [history, setHistory] = useState<HistoryState[]>([]);
   const [future, setFuture] = useState<HistoryState[]>([]);
@@ -168,7 +166,7 @@ export default function Home() {
     ]);
     setFileData(previousState.data);
     setEditMetadata(previousState.metadata);
-    setRowSources(previousState.sources || {}); // Restore sources
+    setRowSources(previousState.sources || {});
     setHistory(newHistory);
   }, [history, fileData, editMetadata, rowSources]);
 
@@ -192,7 +190,7 @@ export default function Home() {
     setMainFileError(undefined);
     setEditingCell(null);
     setEditMetadata({});
-    setRowSources({}); // Reset sources
+    setRowSources({});
     setHistory([]);
     setFuture([]);
     setExtraFiles([]);
@@ -239,19 +237,17 @@ export default function Home() {
     }
   };
 
-  // --- HELPER: Remove Data & Sources for a Specific File ID ---
+  // --- HELPER: Remove Data & Sources ---
   const removeDataForFileId = (
     idToRemove: string,
     currentData: unknown[][],
     currentMeta: Record<string, EditSource>,
     currentSources: Record<number, RowSourceInfo>,
   ) => {
-    const rowsKeepIndices: number[] = [0]; // Keep headers
+    const rowsKeepIndices: number[] = [0];
 
     for (let r = 1; r < currentData.length; r++) {
       let isFromThisFile = false;
-
-      // Check Metadata
       const row = currentData[r] as unknown[];
       for (let c = 0; c < row.length; c++) {
         const meta = currentMeta[`${r}-${c}`];
@@ -260,14 +256,9 @@ export default function Home() {
           break;
         }
       }
-      // Double check source map just in case metadata was cleared manually but it's still linked
-      if (currentSources[r]?.fileId === idToRemove) {
-        isFromThisFile = true;
-      }
+      if (currentSources[r]?.fileId === idToRemove) isFromThisFile = true;
 
-      if (!isFromThisFile) {
-        rowsKeepIndices.push(r);
-      }
+      if (!isFromThisFile) rowsKeepIndices.push(r);
     }
 
     const newData = rowsKeepIndices.map((idx) => currentData[idx]);
@@ -275,14 +266,11 @@ export default function Home() {
     const newSources: Record<number, RowSourceInfo> = {};
 
     rowsKeepIndices.forEach((oldRowIdx, newRowIdx) => {
-      // Shift Metadata
       const row = currentData[oldRowIdx] as unknown[];
       row.forEach((_, colIdx) => {
         const oldMeta = currentMeta[`${oldRowIdx}-${colIdx}`];
         if (oldMeta) newMetadata[`${newRowIdx}-${colIdx}`] = oldMeta;
       });
-
-      // Shift Sources
       if (currentSources[oldRowIdx]) {
         newSources[newRowIdx] = currentSources[oldRowIdx];
       }
@@ -291,7 +279,7 @@ export default function Home() {
     return { newData, newMetadata, newSources };
   };
 
-  // --- CORE EXTRACTION FUNCTION ---
+  // --- CORE EXTRACTION ---
   const runExtraction = async (
     refFile: ReferenceFile,
     currentData: unknown[][],
@@ -307,7 +295,6 @@ export default function Home() {
       return next;
     });
 
-    // 1. CLEAN: Remove existing data/sources for this file
     const {
       newData: cleanedData,
       newMetadata: cleanedMeta,
@@ -322,7 +309,6 @@ export default function Home() {
     const headers = cleanedData[0];
     const attemptedModel = currentModel;
 
-    // 2. EXTRACT
     const result = await extractDataFromReference(
       refFile.file,
       headers,
@@ -340,10 +326,7 @@ export default function Home() {
         );
       }
 
-      // 3. MERGE
       const startRowIndex = cleanedData.length;
-
-      // Extract raw data arrays from the result object
       const newRowsData = result.rows.map((r) => r.data);
       const updatedData = [...cleanedData, ...newRowsData];
 
@@ -352,18 +335,15 @@ export default function Home() {
 
       result.rows.forEach((rowObj, rIdx) => {
         const actualRowIdx = startRowIndex + rIdx;
-
-        // Add Metadata for coloring
         rowObj.data.forEach((_, cIdx) => {
           newMetadata[`${actualRowIdx}-${cIdx}`] = `extraction-${refFile.id}`;
         });
 
-        // Add Source Info
+        // Map the new structured citation to our RowSourceInfo
         newSources[actualRowIdx] = {
           fileId: refFile.id,
           fileName: refFile.file.name,
-          page: rowObj.citation.page,
-          quote: rowObj.citation.quote,
+          citation: rowObj.citation,
         };
       });
 
@@ -371,7 +351,7 @@ export default function Home() {
     } else {
       setExtractionErrors((prev) => ({
         ...prev,
-        [refFile.id]: `Could not extract valid data from ${refFile.file.name}.`,
+        [refFile.id]: `Could not extract valid tabular data from ${refFile.file.name}.`,
       }));
       return {
         updatedData: cleanedData,
@@ -461,15 +441,7 @@ export default function Home() {
     }
   };
 
-  // --- STANDARD EDITING (omitted irrelevant parts for brevity, using same logic) ---
-  const updateDataWithMetadata = (
-    newData: unknown[][],
-    newMetadata: Record<string, EditSource>,
-  ) => {
-    commitToHistory();
-    setFileData(newData);
-    setEditMetadata(newMetadata);
-  };
+  // --- STANDARD EDITING ---
   const handleGeminiUpdate = (newData: unknown[][]) => {
     const newMetadata = { ...editMetadata };
     newData.forEach((row, rIndex) => {
@@ -485,8 +457,14 @@ export default function Home() {
         }
       });
     });
-    updateDataWithMetadata(newData, newMetadata);
+    setHistory((prev) => [
+      ...prev,
+      { data: fileData!, metadata: editMetadata, sources: rowSources },
+    ]);
+    setFileData(newData);
+    setEditMetadata(newMetadata);
   };
+
   const startEditing = (
     rowIndex: number,
     colIndex: number,
@@ -495,6 +473,7 @@ export default function Home() {
     setEditingCell({ rowIndex, colIndex });
     setTempValue(String(currentValue ?? ""));
   };
+
   const saveEdit = () => {
     if (!editingCell || !fileData) return;
     const { rowIndex, colIndex } = editingCell;
@@ -512,6 +491,7 @@ export default function Home() {
     }
     setEditingCell(null);
   };
+
   const cancelEdit = () => {
     setEditingCell(null);
     setTempValue("");
@@ -543,7 +523,6 @@ export default function Home() {
 
   return (
     <div className="flex h-screen w-full flex-col gap-4 bg-slate-900 p-6 text-slate-200">
-      {/* ... Header Section (Identical to previous) ... */}
       <div className="flex shrink-0 flex-col gap-4 border-b border-slate-700 pb-4">
         {/* Actions Row */}
         <div className="flex items-center gap-4">
@@ -645,7 +624,7 @@ export default function Home() {
           )}
         </div>
 
-        {/* References Row */}
+        {/* References */}
         {extraFiles.length > 0 && (
           <div className="flex items-center justify-between rounded-lg bg-slate-800/50 px-3 py-2">
             <div className="flex flex-wrap items-center gap-2">
@@ -733,7 +712,6 @@ export default function Home() {
 
       {/* Main Content */}
       <div className="relative flex flex-1 gap-6 overflow-hidden">
-        {/* Left Side: Data Table */}
         <div className="flex min-w-0 flex-1 flex-col transition-all duration-300">
           {fileData ? (
             <div className="relative flex-1 overflow-hidden rounded-lg border border-slate-700 bg-slate-800 shadow-lg">
@@ -741,9 +719,8 @@ export default function Home() {
                 <table className="w-full border-collapse text-left text-sm text-slate-400">
                   <thead className="sticky top-0 z-10 bg-slate-900 text-xs font-bold text-slate-200 shadow-sm">
                     <tr>
-                      {/* NEW: Action/Status Column Header */}
                       <th className="sticky left-0 z-20 w-10 border-b border-slate-700 bg-slate-900 px-3 py-3 text-center">
-                        <span className="sr-only">Status</span>
+                        <span className="sr-only">Source</span>
                       </th>
                       {[...headers].map((header, colIndex) => (
                         <th
@@ -785,10 +762,8 @@ export default function Home() {
                     {bodyRows.map((row, rIndex) => {
                       const rowIndex = rIndex + 1;
                       const rowSource = rowSources[rowIndex];
-
                       return (
                         <tr key={rowIndex}>
-                          {/* NEW: Action/Status Column Cell */}
                           <td className="sticky left-0 z-10 border-b border-slate-700 bg-slate-900/95 px-3 py-4 text-center">
                             {rowSource && (
                               <button
@@ -850,8 +825,6 @@ export default function Home() {
             </div>
           )}
         </div>
-
-        {/* Right Side: Gemini Chat */}
         <div
           className={cn(
             "w-[20%] min-w-[320px] transition-all duration-300",
@@ -875,7 +848,6 @@ export default function Home() {
         </button>
       )}
 
-      {/* Reset Dialog */}
       {isResetDialogOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
           <div className="w-full max-w-sm rounded-lg border border-slate-700 bg-slate-800 p-6 shadow-2xl">
@@ -899,7 +871,7 @@ export default function Home() {
         </div>
       )}
 
-      {/* NEW: Citation Source Modal */}
+      {/* UPDATED: Dynamic Source Modal */}
       {viewingSource && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
           <div className="relative w-full max-w-md rounded-lg border border-slate-700 bg-slate-800 p-6 shadow-2xl">
@@ -909,39 +881,58 @@ export default function Home() {
             >
               <XIcon className="h-5 w-5" />
             </button>
-
             <div className="mb-4 flex items-center gap-2">
               <BookIcon className="h-5 w-5 text-emerald-400" />
               <h3 className="text-lg font-bold text-slate-100">
-                Source Citation
+                {viewingSource.citation.type === "api"
+                  ? "Endpoint Source"
+                  : "Source Citation"}
               </h3>
             </div>
 
             <div className="space-y-4 text-sm">
+              {/* SOURCE NAME */}
               <div className="rounded border border-slate-700 bg-slate-900 p-3">
                 <span className="mb-1 block text-xs tracking-wider text-slate-500 uppercase">
-                  Document
+                  {viewingSource.citation.type === "api"
+                    ? "Endpoint"
+                    : "Document"}
                 </span>
                 <span className="font-medium text-emerald-400">
-                  {viewingSource.fileName}
+                  {viewingSource.fileName ||
+                    (viewingSource.citation.type === "api"
+                      ? viewingSource.citation.endpoint
+                      : "Unknown")}
                 </span>
               </div>
 
-              <div className="rounded border border-slate-700 bg-slate-900 p-3">
-                <span className="mb-1 block text-xs tracking-wider text-slate-500 uppercase">
-                  Location
-                </span>
-                <span className="text-slate-300">
-                  Page {viewingSource.page}
-                </span>
-              </div>
+              {/* LOCATION: Page OR Row/Sheet */}
+              {viewingSource.citation.type !== "api" && (
+                <div className="rounded border border-slate-700 bg-slate-900 p-3">
+                  <span className="mb-1 block text-xs tracking-wider text-slate-500 uppercase">
+                    Location
+                  </span>
+                  <span className="text-slate-300">
+                    {viewingSource.citation.type === "spreadsheet"
+                      ? viewingSource.citation.location
+                      : `Page ${viewingSource.citation.page}`}
+                  </span>
+                </div>
+              )}
 
+              {/* EVIDENCE: Quote OR Reasoning */}
               <div className="rounded border border-slate-700 bg-slate-900 p-3">
                 <span className="mb-1 block text-xs tracking-wider text-slate-500 uppercase">
-                  Quote / Context
+                  {viewingSource.citation.type === "document"
+                    ? "Quote / Context"
+                    : "Reasoning"}
                 </span>
                 <blockquote className="border-l-2 border-slate-600 py-1 pl-3 text-slate-300 italic">
-                  "{viewingSource.quote}"
+                  "
+                  {viewingSource.citation.type === "document"
+                    ? viewingSource.citation.quote
+                    : viewingSource.citation.reasoning}
+                  "
                 </blockquote>
               </div>
             </div>

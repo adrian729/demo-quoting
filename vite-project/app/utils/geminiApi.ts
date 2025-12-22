@@ -1,4 +1,8 @@
-import { GoogleGenerativeAI, type Content } from "@google/generative-ai";
+import {
+  GoogleGenerativeAI,
+  type Content,
+  type GenerationConfig,
+} from "@google/generative-ai";
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 export const DEFAULT_MODEL = "gemini-2.0-flash";
@@ -27,23 +31,19 @@ export async function fetchAvailableModels(): Promise<string[]> {
   }
 }
 
-/**
- * Tries to generate content using a specific model.
- * If it fails, it recursively tries the next available model.
- */
 export async function generateContentWithFallback(
   startModel: string,
   availableModels: string[],
   systemInstruction: string,
   contents: Content[],
   onRetry?: (failedModel: string, nextModel: string) => void,
+  // NEW: Allow passing config
+  config: GenerationConfig = {},
 ): Promise<{ text: string; finalModel: string }> {
   const genAI = new GoogleGenerativeAI(API_KEY);
 
-  // Helper to find the next model
   const getNextModel = (current: string, excluded: string[]) => {
     const idx = availableModels.indexOf(current);
-    // Search forward from current index
     const next = availableModels
       .slice(idx + 1)
       .find((m) => !excluded.includes(m));
@@ -58,6 +58,8 @@ export async function generateContentWithFallback(
       const model = genAI.getGenerativeModel({
         model: modelName,
         systemInstruction,
+        // APPLY CONFIG (Temperature, etc.)
+        generationConfig: config,
       });
 
       const result = await model.generateContent({ contents });
