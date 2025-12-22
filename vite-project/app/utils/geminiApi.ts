@@ -2,6 +2,7 @@ import {
   GoogleGenerativeAI,
   type Content,
   type GenerationConfig,
+  type Tool,
 } from "@google/generative-ai";
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
@@ -37,8 +38,9 @@ export async function generateContentWithFallback(
   systemInstruction: string,
   contents: Content[],
   onRetry?: (failedModel: string, nextModel: string) => void,
-  // NEW: Allow passing config
   config: GenerationConfig = {},
+  // NEW: Accept tools (like Google Search)
+  tools: Tool[] = [],
 ): Promise<{ text: string; finalModel: string }> {
   const genAI = new GoogleGenerativeAI(API_KEY);
 
@@ -58,8 +60,9 @@ export async function generateContentWithFallback(
       const model = genAI.getGenerativeModel({
         model: modelName,
         systemInstruction,
-        // APPLY CONFIG (Temperature, etc.)
         generationConfig: config,
+        // PASS TOOLS HERE
+        tools: tools,
       });
 
       const result = await model.generateContent({ contents });

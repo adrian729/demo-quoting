@@ -8,6 +8,7 @@ import {
 import ExportActions from "~/components/ExportActions";
 import GeminiChat from "~/components/GeminiChat";
 import {
+  BanknotesIcon,
   BookIcon,
   MagicIcon,
   PaperClipIcon,
@@ -24,6 +25,7 @@ import {
   extractDataFromReference,
   type ExtractionCitation,
 } from "~/utils/aiExtractionUtils";
+import { quoteProducts } from "~/utils/aiQuotingUtils";
 import { cn } from "~/utils/cn";
 import {
   isOfTypeSupportedExportType,
@@ -34,19 +36,18 @@ import {
 } from "~/utils/excelUtils";
 import type { Route } from "./+types/home";
 
-// --- Main Page ---
+// --- Types ---
 
 type EditingCell = { rowIndex: number; colIndex: number };
 type EditSource = "user" | "ai" | string;
 
-// UPDATED: Comprehensive Source Info Type
+// The unified structure for source info (files or API/Chat)
 type RowSourceInfo = {
-  fileId?: string; // Optional, only for files
-  fileName?: string; // Optional, only for files
-  citation: ExtractionCitation; // The Union Type from utils
+  fileId: string; // ID of the reference file OR "gemini-chat"
+  fileName: string; // Display name (Filename or "Gemini Chat")
+  citation: ExtractionCitation; // Flexible union type (Document vs Spreadsheet vs API)
 };
 
-// Stable Reference File Object
 type ReferenceFile = {
   id: string;
   file: File;
@@ -84,6 +85,7 @@ const FILE_CELL_VARIANTS = [
 ];
 
 export default function Home() {
+  // --- Main Data State ---
   const [fileData, setFileData] = useState<unknown[][]>();
   const [fileName, setFileName] = useState<string>("");
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
@@ -91,15 +93,18 @@ export default function Home() {
   const [detectedFormat, setDetectedFormat] =
     useState<SupportedExportType>("xlsx");
 
+  // --- Reference & AI State ---
   const [extraFiles, setExtraFiles] = useState<ReferenceFile[]>([]);
   const [extractingFileIds, setExtractingFileIds] = useState<string[]>([]);
   const [extractionErrors, setExtractionErrors] = useState<
     Record<string, string>
   >({});
 
+  // Store source info per row index
   const [rowSources, setRowSources] = useState<Record<number, RowSourceInfo>>(
     {},
   );
+  // Controls the Citation Modal
   const [viewingSource, setViewingSource] = useState<RowSourceInfo | null>(
     null,
   );
@@ -108,6 +113,10 @@ export default function Home() {
   const { availableModels, currentModel, setCurrentModel } = useGemini();
   const [fallbackWarning, setFallbackWarning] = useState<string | null>(null);
 
+  // Quoting State
+  const [isQuoting, setIsQuoting] = useState(false);
+
+  // --- UI State ---
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [editMetadata, setEditMetadata] = useState<Record<string, EditSource>>(
     {},
@@ -116,6 +125,7 @@ export default function Home() {
   const [tempValue, setTempValue] = useState<string>("");
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
 
+  // --- History ---
   type HistoryState = {
     data: unknown[][];
     metadata: Record<string, EditSource>;
@@ -127,8 +137,7 @@ export default function Home() {
     null,
   );
 
-  // --- Effects & Logic ---
-
+  // --- Keyboard Shortcuts ---
   useEffect(() => {
     const handleGlobalKeyDown = (e: globalThis.KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "s") {
@@ -142,6 +151,7 @@ export default function Home() {
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
   }, [fileData, fileName, detectedFormat]);
 
+  // --- History Management ---
   const commitToHistory = useCallback(() => {
     if (!fileData) return;
     setHistory((prev) => {
@@ -184,6 +194,7 @@ export default function Home() {
     setFuture(newFuture);
   }, [future, fileData, editMetadata, rowSources]);
 
+  // --- Main File Logic ---
   const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.length) return;
     const inputFile = e.target.files[0];
@@ -237,17 +248,20 @@ export default function Home() {
     }
   };
 
-  // --- HELPER: Remove Data & Sources ---
+  // --- Helper: Clean Data for File ID ---
+  // Removes rows that were previously extracted from a specific file
   const removeDataForFileId = (
     idToRemove: string,
     currentData: unknown[][],
     currentMeta: Record<string, EditSource>,
     currentSources: Record<number, RowSourceInfo>,
   ) => {
-    const rowsKeepIndices: number[] = [0];
+    const rowsKeepIndices: number[] = [0]; // Always keep header
 
     for (let r = 1; r < currentData.length; r++) {
       let isFromThisFile = false;
+
+      // Check metadata on cells
       const row = currentData[r] as unknown[];
       for (let c = 0; c < row.length; c++) {
         const meta = currentMeta[`${r}-${c}`];
@@ -256,9 +270,14 @@ export default function Home() {
           break;
         }
       }
-      if (currentSources[r]?.fileId === idToRemove) isFromThisFile = true;
+      // Double check source map
+      if (currentSources[r]?.fileId === idToRemove) {
+        isFromThisFile = true;
+      }
 
-      if (!isFromThisFile) rowsKeepIndices.push(r);
+      if (!isFromThisFile) {
+        rowsKeepIndices.push(r);
+      }
     }
 
     const newData = rowsKeepIndices.map((idx) => currentData[idx]);
@@ -266,11 +285,14 @@ export default function Home() {
     const newSources: Record<number, RowSourceInfo> = {};
 
     rowsKeepIndices.forEach((oldRowIdx, newRowIdx) => {
+      // Shift Metadata
       const row = currentData[oldRowIdx] as unknown[];
       row.forEach((_, colIdx) => {
         const oldMeta = currentMeta[`${oldRowIdx}-${colIdx}`];
         if (oldMeta) newMetadata[`${newRowIdx}-${colIdx}`] = oldMeta;
       });
+
+      // Shift Sources
       if (currentSources[oldRowIdx]) {
         newSources[newRowIdx] = currentSources[oldRowIdx];
       }
@@ -279,7 +301,7 @@ export default function Home() {
     return { newData, newMetadata, newSources };
   };
 
-  // --- CORE EXTRACTION ---
+  // --- Core Extraction Function ---
   const runExtraction = async (
     refFile: ReferenceFile,
     currentData: unknown[][],
@@ -295,6 +317,7 @@ export default function Home() {
       return next;
     });
 
+    // 1. Clean old data for this file ID (Refinement)
     const {
       newData: cleanedData,
       newMetadata: cleanedMeta,
@@ -309,6 +332,7 @@ export default function Home() {
     const headers = cleanedData[0];
     const attemptedModel = currentModel;
 
+    // 2. Call AI
     const result = await extractDataFromReference(
       refFile.file,
       headers,
@@ -326,6 +350,7 @@ export default function Home() {
         );
       }
 
+      // 3. Merge New Data
       const startRowIndex = cleanedData.length;
       const newRowsData = result.rows.map((r) => r.data);
       const updatedData = [...cleanedData, ...newRowsData];
@@ -335,11 +360,13 @@ export default function Home() {
 
       result.rows.forEach((rowObj, rIdx) => {
         const actualRowIdx = startRowIndex + rIdx;
+
+        // Apply Color Metadata
         rowObj.data.forEach((_, cIdx) => {
           newMetadata[`${actualRowIdx}-${cIdx}`] = `extraction-${refFile.id}`;
         });
 
-        // Map the new structured citation to our RowSourceInfo
+        // Apply Source Citation
         newSources[actualRowIdx] = {
           fileId: refFile.id,
           fileName: refFile.file.name,
@@ -349,10 +376,12 @@ export default function Home() {
 
       return { updatedData, newMetadata, newSources };
     } else {
+      // 4. Handle Failure
       setExtractionErrors((prev) => ({
         ...prev,
         [refFile.id]: `Could not extract valid tabular data from ${refFile.file.name}.`,
       }));
+      // Return the cleaned state so users can retry without duplicates
       return {
         updatedData: cleanedData,
         newMetadata: cleanedMeta,
@@ -361,7 +390,99 @@ export default function Home() {
     }
   };
 
-  // --- ADD FILE ---
+  // --- Auto Quoting Logic ---
+  const handleAutoQuote = async () => {
+    if (!fileData || fileData.length === 0) return;
+    setIsQuoting(true);
+    commitToHistory();
+
+    try {
+      const currentHeaders = fileData[0] as string[];
+      let updatedHeaders = [...currentHeaders];
+      let updatedData = [...fileData];
+      let updatedMeta = { ...editMetadata };
+      let updatedSources = { ...rowSources };
+
+      // 1. Identify or Create Columns
+      const requiredCols = ["Net Price", "Price/Unit", "Est. Delivery"];
+      const colIndices: Record<string, number> = {};
+
+      requiredCols.forEach((colName) => {
+        let idx = updatedHeaders.findIndex((h) =>
+          h?.toString().toLowerCase().includes(colName.toLowerCase()),
+        );
+        if (idx === -1) {
+          idx = updatedHeaders.length;
+          updatedHeaders.push(colName);
+          // Expand all rows to fit new header
+          updatedData = updatedData.map((row, i) =>
+            i === 0 ? updatedHeaders : [...row, ""],
+          );
+        }
+        colIndices[colName] = idx;
+      });
+
+      // Update data with new headers
+      updatedData[0] = updatedHeaders;
+
+      // 2. Call AI
+      // We pass the BODY rows (slice 1)
+      const bodyRows = updatedData.slice(1);
+      const quotes = await quoteProducts(
+        bodyRows,
+        updatedHeaders,
+        currentModel,
+        availableModels,
+      );
+
+      if (quotes) {
+        // 3. Merge Results
+        quotes.forEach((quote) => {
+          // quote.rowId is 1-based index from utils logic
+          const rowIndex = quote.rowId;
+
+          if (rowIndex < updatedData.length) {
+            const row = [...(updatedData[rowIndex] as unknown[])];
+
+            // Fill cells
+            row[colIndices["Net Price"]] = quote.totalNetPrice;
+            row[colIndices["Price/Unit"]] = quote.netPricePerUnit;
+            row[colIndices["Est. Delivery"]] = quote.estimatedDelivery;
+
+            updatedData[rowIndex] = row;
+
+            // Update Metadata (Coloring)
+            const quoteSourceId = "conrad-quoting";
+            updatedMeta[`${rowIndex}-${colIndices["Net Price"]}`] = "ai";
+            updatedMeta[`${rowIndex}-${colIndices["Price/Unit"]}`] = "ai";
+            updatedMeta[`${rowIndex}-${colIndices["Est. Delivery"]}`] = "ai";
+
+            // Update Source Citation
+            updatedSources[rowIndex] = {
+              fileId: quoteSourceId,
+              fileName: "Conrad.de Quoting AI",
+              citation: {
+                type: "api",
+                endpoint: "Conrad.de Procurement",
+                reasoning: quote.reasoning,
+              },
+            };
+          }
+        });
+
+        setFileData(updatedData);
+        setEditMetadata(updatedMeta);
+        setRowSources(updatedSources);
+      }
+    } catch (e) {
+      console.error("Auto Quoting error", e);
+      setMainFileError("Quoting process failed.");
+    } finally {
+      setIsQuoting(false);
+    }
+  };
+
+  // --- Add Reference Handler ---
   const handleAddExtraFile = async (e: ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.length) return;
     if (!fileData) return;
@@ -377,6 +498,7 @@ export default function Home() {
     setColorCounter((prev) => prev + newFilesRaw.length);
     commitToHistory();
 
+    // Accumulate changes for batch uploads
     let workingData = [...fileData];
     let workingMeta = { ...editMetadata };
     let workingSources = { ...rowSources };
@@ -400,7 +522,7 @@ export default function Home() {
     e.target.value = "";
   };
 
-  // --- REMOVE FILE ---
+  // --- Remove Reference Handler ---
   const removeExtraFile = (idToRemove: string) => {
     if (!fileData) return;
     commitToHistory();
@@ -424,7 +546,7 @@ export default function Home() {
     setRowSources(newSources);
   };
 
-  // --- MANUAL RETRY ---
+  // --- Manual Retry Handler ---
   const handleManualExtract = async (refFile: ReferenceFile) => {
     if (!fileData) return;
     commitToHistory();
@@ -441,8 +563,11 @@ export default function Home() {
     }
   };
 
-  // --- STANDARD EDITING ---
-  const handleGeminiUpdate = (newData: unknown[][]) => {
+  // --- Chat & Edit Handlers ---
+  const handleGeminiUpdate = (
+    newData: unknown[][],
+    newSources?: Record<number, RowSourceInfo>,
+  ) => {
     const newMetadata = { ...editMetadata };
     newData.forEach((row, rIndex) => {
       const isNewRow = !fileData || rIndex >= fileData.length;
@@ -457,12 +582,20 @@ export default function Home() {
         }
       });
     });
+
+    // Merge chat sources if provided
+    let updatedSources = { ...rowSources };
+    if (newSources) {
+      updatedSources = { ...updatedSources, ...newSources };
+    }
+
     setHistory((prev) => [
       ...prev,
       { data: fileData!, metadata: editMetadata, sources: rowSources },
     ]);
     setFileData(newData);
     setEditMetadata(newMetadata);
+    setRowSources(updatedSources);
   };
 
   const startEditing = (
@@ -523,8 +656,9 @@ export default function Home() {
 
   return (
     <div className="flex h-screen w-full flex-col gap-4 bg-slate-900 p-6 text-slate-200">
+      {/* 1. HEADER SECTION */}
       <div className="flex shrink-0 flex-col gap-4 border-b border-slate-700 pb-4">
-        {/* Actions Row */}
+        {/* Top: File Actions */}
         <div className="flex items-center gap-4">
           <span className="font-semibold text-slate-300">File</span>
           <label
@@ -541,19 +675,50 @@ export default function Home() {
             />
           </label>
           {fileData && (
-            <label
-              className={cn(
-                "flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-700 hover:text-white",
-              )}
-            >
-              <PaperClipIcon className="h-4 w-4" /> Add Reference
-              <input
-                type="file"
-                multiple
-                onChange={handleAddExtraFile}
-                className="hidden"
-              />
-            </label>
+            <>
+              <label
+                className={cn(
+                  "flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-700 hover:text-white",
+                )}
+              >
+                <PaperClipIcon className="h-4 w-4" /> Add Reference
+                <input
+                  type="file"
+                  multiple
+                  onChange={handleAddExtraFile}
+                  className="hidden"
+                />
+              </label>
+
+              {/* NEW: Model Selector for Quoting */}
+              <div className="ml-2 flex items-center gap-2 border-l border-slate-700 pl-4">
+                <span className="hidden text-xs text-slate-500 xl:inline">
+                  Quoting Model:
+                </span>
+                <ModelSelector
+                  models={availableModels}
+                  selectedModel={currentModel}
+                  onSelect={setCurrentModel}
+                />
+              </div>
+
+              <button
+                onClick={handleAutoQuote}
+                disabled={isQuoting}
+                className={cn(
+                  "flex items-center gap-2 rounded-lg border border-emerald-700/50 bg-emerald-900/20 px-3 py-2 text-sm font-medium text-emerald-300 transition-all hover:bg-emerald-900/40 hover:text-emerald-200 hover:shadow-lg hover:shadow-emerald-900/20",
+                  isQuoting && "cursor-wait opacity-70",
+                )}
+                title="Automatically fetch prices and delivery times from Conrad.de"
+              >
+                {isQuoting ? (
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-emerald-500/50 border-t-emerald-400" />
+                ) : (
+                  <BanknotesIcon className="h-4 w-4" />
+                )}
+                Auto Quote
+              </button>
+            </>
           )}
           {fileData && (
             <div className="mx-2 flex items-center gap-1 border-r border-l border-slate-700 px-4">
@@ -624,7 +789,7 @@ export default function Home() {
           )}
         </div>
 
-        {/* References */}
+        {/* Bottom: References List */}
         {extraFiles.length > 0 && (
           <div className="flex items-center justify-between rounded-lg bg-slate-800/50 px-3 py-2">
             <div className="flex flex-wrap items-center gap-2">
@@ -710,8 +875,9 @@ export default function Home() {
         )}
       </div>
 
-      {/* Main Content */}
+      {/* 2. MAIN CONTENT SECTION */}
       <div className="relative flex flex-1 gap-6 overflow-hidden">
+        {/* Left: Table */}
         <div className="flex min-w-0 flex-1 flex-col transition-all duration-300">
           {fileData ? (
             <div className="relative flex-1 overflow-hidden rounded-lg border border-slate-700 bg-slate-800 shadow-lg">
@@ -719,9 +885,11 @@ export default function Home() {
                 <table className="w-full border-collapse text-left text-sm text-slate-400">
                   <thead className="sticky top-0 z-10 bg-slate-900 text-xs font-bold text-slate-200 shadow-sm">
                     <tr>
+                      {/* Status Column */}
                       <th className="sticky left-0 z-20 w-10 border-b border-slate-700 bg-slate-900 px-3 py-3 text-center">
                         <span className="sr-only">Source</span>
                       </th>
+                      {/* Headers */}
                       {[...headers].map((header, colIndex) => (
                         <th
                           key={colIndex}
@@ -764,6 +932,7 @@ export default function Home() {
                       const rowSource = rowSources[rowIndex];
                       return (
                         <tr key={rowIndex}>
+                          {/* Status Cell */}
                           <td className="sticky left-0 z-10 border-b border-slate-700 bg-slate-900/95 px-3 py-4 text-center">
                             {rowSource && (
                               <button
@@ -775,6 +944,7 @@ export default function Home() {
                               </button>
                             )}
                           </td>
+                          {/* Data Cells */}
                           {[...row].map((cell, colIndex) => (
                             <td
                               key={colIndex}
@@ -825,6 +995,8 @@ export default function Home() {
             </div>
           )}
         </div>
+
+        {/* Right: Chat */}
         <div
           className={cn(
             "w-[20%] min-w-[320px] transition-all duration-300",
@@ -848,6 +1020,7 @@ export default function Home() {
         </button>
       )}
 
+      {/* Reset Modal */}
       {isResetDialogOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
           <div className="w-full max-w-sm rounded-lg border border-slate-700 bg-slate-800 p-6 shadow-2xl">
@@ -871,7 +1044,7 @@ export default function Home() {
         </div>
       )}
 
-      {/* UPDATED: Dynamic Source Modal */}
+      {/* 3. CITATION MODAL */}
       {viewingSource && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
           <div className="relative w-full max-w-md rounded-lg border border-slate-700 bg-slate-800 p-6 shadow-2xl">
@@ -881,6 +1054,7 @@ export default function Home() {
             >
               <XIcon className="h-5 w-5" />
             </button>
+
             <div className="mb-4 flex items-center gap-2">
               <BookIcon className="h-5 w-5 text-emerald-400" />
               <h3 className="text-lg font-bold text-slate-100">
@@ -891,7 +1065,7 @@ export default function Home() {
             </div>
 
             <div className="space-y-4 text-sm">
-              {/* SOURCE NAME */}
+              {/* Field 1: Source Name */}
               <div className="rounded border border-slate-700 bg-slate-900 p-3">
                 <span className="mb-1 block text-xs tracking-wider text-slate-500 uppercase">
                   {viewingSource.citation.type === "api"
@@ -906,7 +1080,7 @@ export default function Home() {
                 </span>
               </div>
 
-              {/* LOCATION: Page OR Row/Sheet */}
+              {/* Field 2: Location (Conditional) */}
               {viewingSource.citation.type !== "api" && (
                 <div className="rounded border border-slate-700 bg-slate-900 p-3">
                   <span className="mb-1 block text-xs tracking-wider text-slate-500 uppercase">
@@ -920,7 +1094,7 @@ export default function Home() {
                 </div>
               )}
 
-              {/* EVIDENCE: Quote OR Reasoning */}
+              {/* Field 3: Evidence (Quote or Reasoning) */}
               <div className="rounded border border-slate-700 bg-slate-900 p-3">
                 <span className="mb-1 block text-xs tracking-wider text-slate-500 uppercase">
                   {viewingSource.citation.type === "document"
